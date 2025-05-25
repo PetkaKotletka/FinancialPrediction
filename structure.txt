@@ -1,0 +1,28 @@
+src/
+├── config/
+│   ├── __init__.py              # Config loader
+│   └── config.yaml              # All hyperparameters, data paths
+├── data/
+│   ├── __init__.py              # Data module exports
+│   ├── downloader.py            # yfinance & FRED data fetching
+│   ├── preprocessor.py          # Data cleaning, target creation, regime features
+│   └── feature_engineer.py      # Technical indicators, sector encoding
+├── models/
+│   ├── __init__.py              # Model exports
+│   ├── base_model.py            # Abstract base class for all models
+│   ├── arima_model.py           # ARIMA implementation [TODO]
+│   ├── linear_model.py          # Linear regression [TODO]
+│   ├── tree_models.py           # Decision Tree, XGBoost [TODO]
+│   ├── rnn_models.py            # LSTM, GRU [TODO]
+│   └── cnn_model.py             # CNN for time series [TODO]
+├── evaluation/
+│   ├── __init__.py              # Evaluation exports
+│   ├── metrics.py               # RMSE, accuracy, trading metrics [TODO]
+│   └── evaluator.py             # Backtesting, regime analysis [TODO]
+├── utils/
+│   ├── __init__.py              # Utility exports
+│   └── model_io.py              # Save/load models with metadata
+├── main.py                      # Main orchestration script
+├── README.md                    # Project documentation
+├── structure.txt                # This file
+└── .gitignore                   # Git ignore rules

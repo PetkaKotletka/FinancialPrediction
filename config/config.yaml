@@ -1,0 +1,43 @@
+# Data configuration
+data:
+  tickers: ['AAPL', 'MSFT', 'AMZN', 'TSLA', '^GSPC', '^DJI', '^IXIC']
+  start_date: '2015-01-01'
+  end_date: '2024-12-31'
+  fred_indicators: ['VIXCLS', 'GDP', 'T10YIE']
+  
+# Feature engineering
+features:
+  technical_indicators:
+    rsi_period: 14
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    bb_period: 20
+    bb_std: 2
+    sma_short: 50
+    sma_long: 200
+  
+# Target configuration  
+targets:
+  - name: 'return_1d'
+    type: 'regression'
+    horizon: 1
+  - name: 'direction_1d'
+    type: 'classification'
+    horizon: 1
+  - name: 'return_5d'
+    type: 'regression'
+    horizon: 5
+
+# Model configuration
+models:
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  
+# Paths
+paths:
+  data_dir: 'data/raw/'
+  processed_dir: 'data/processed/'
+  models_dir: 'models/saved/'
+  results_dir: 'results/'

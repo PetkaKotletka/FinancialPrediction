@@ -1,0 +1,27 @@
+# Data files
+data/raw/
+data/processed/
+
+# Model files
+models/saved/
+*.pkl
+*.h5
+*.joblib
+
+# Results
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Logs
+*.log
