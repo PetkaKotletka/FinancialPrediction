@@ -1,7 +1,3 @@
-# Data files
-data/raw/
-data/processed/
-
 # Model files
 models/saved/
 *.pkl

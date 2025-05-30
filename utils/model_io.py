@@ -36,3 +36,9 @@ class ModelIO:
             return joblib.load(model_path)
         else:
             raise FileNotFoundError(f"Model {model_name} not found")
+
+    def model_exists(self, model_name: str) -> bool:
+        """Check if a saved model exists"""
+        model_path = self.models_dir / f"{model_name}.pkl"
+        keras_path = self.models_dir / f"{model_name}.h5"
+        return model_path.exists() or keras_path.exists()

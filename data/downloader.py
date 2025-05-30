@@ -30,18 +30,12 @@ class DataDownloader:
 
     def download_fred_data(self, indicators: List[str], start: str, end: str) -> pd.DataFrame:
         """Download economic indicators from FRED"""
-        # TODO: Implement FRED API download
-        # For now, assume CSV file exists
+        # For now, it's a local csv file
         fred_path = self.data_dir / 'FRED.csv'
-        if fred_path.exists():
-            fred_data = pd.read_csv(fred_path)
-            fred_data['observation_date'] = pd.to_datetime(fred_data['observation_date'])
-            fred_data.set_index('observation_date', inplace=True)
-            return fred_data
-        else:
-            # Create placeholder
-            date_range = pd.date_range(start=start, end=end, freq='D')
-            return pd.DataFrame(index=date_range)
+        fred_data = pd.read_csv(fred_path)
+        fred_data['observation_date'] = pd.to_datetime(fred_data['observation_date'])
+        fred_data.set_index('observation_date', inplace=True)
+        return fred_data
 
     def _get_sector(self, ticker: str) -> str:
         """Map ticker to sector"""
@@ -54,4 +48,6 @@ class DataDownloader:
             '^DJI': 'Index',
             '^IXIC': 'Index'
         }
+        if ticker not in sector_map.keys():
+            print(f'Warning: Ticker {ticker} not found in sector map')
         return sector_map.get(ticker, 'Unknown')

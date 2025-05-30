@@ -32,6 +32,10 @@ class BaseModel(ABC):
         # Set fine_tune flag to freeze/unfreeze layers
         pass
 
+    def load_pretrained_from_web(self):
+        """Load pre-trained weights from internet (override in subclasses if available)"""
+        raise NotImplementedError(f"No pre-trained weights available for {self.model_name}")
+
     @abstractmethod
     def train(self, X_train: np.ndarray, y_train: np.ndarray,
               X_val: np.ndarray = None, y_val: np.ndarray = None) -> Dict[str, float]:
