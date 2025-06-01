@@ -54,11 +54,3 @@ class FeatureEngineer:
         """One-hot encode sectors"""
         sector_dummies = pd.get_dummies(df['sector'], prefix='sector')
         return pd.concat([df, sector_dummies], axis=1)
-
-    def create_model_features(self, df: pd.DataFrame, model_type: str) -> Dict:
-        """Prepare features for specific model types"""
-        # TODO: Implement model-specific transformations
-        # - tabular: direct features
-        # - sequence: windowed data
-        # - cnn: 2D representations
-        pass

@@ -9,36 +9,48 @@ class ModelIO:
         self.models_dir = Path(config['paths']['models_dir'])
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_model(self, model, model_name: str, metadata: dict = None):
+    def save_model(self, model, model_name: str):
         """Save model and its metadata"""
-        model_path = self.models_dir / f"{model_name}.pkl"
-
-        # Save model
-        if hasattr(model, 'save'):  # Keras models
-            model.save(model_path.with_suffix('.h5'))
-        else:  # Sklearn models
-            joblib.dump(model, model_path)
+        model_path = self.models_dir / model_name
 
         # Save metadata
-        if metadata:
-            meta_path = self.models_dir / f"{model_name}_metadata.json"
-            with open(meta_path, 'w') as f:
-                json.dump(metadata, f, indent=2)
+        metadata = {
+            'model_type': model.__class__.__name__,
+            'target_config': model.target_config,
+            'feature_columns': model.feature_columns,
+            'target_column': model.target_column
+        }
+
+        with open(f"{model_path}_metadata.json", 'w') as f:
+            json.dump(metadata, f)
+
+        # Save sklearn model and scaler for LinearModel
+        if hasattr(model, 'model') and hasattr(model, 'scaler'):
+            model_data = {
+                'model': model.model,
+                'scaler': model.scaler
+            }
+            joblib.dump(model_data, f"{model_path}.pkl")
+        else:
+            # TODO: Handle other model types
+            pass
 
     def load_model(self, model_name: str):
-        """Load model and its metadata"""
-        model_path = self.models_dir / f"{model_name}.pkl"
+        """Load model - returns model data and metadata"""
+        model_path = self.models_dir / model_name
 
-        if model_path.with_suffix('.h5').exists():
-            # TODO: Load Keras model
-            pass
-        elif model_path.exists():
-            return joblib.load(model_path)
+        # Load metadata
+        with open(f"{model_path}_metadata.json", 'r') as f:
+            metadata = json.load(f)
+
+        # Load model data
+        if Path(f"{model_path}.pkl").exists():
+            model_data = joblib.load(f"{model_path}.pkl")
+            return model_data, metadata
         else:
             raise FileNotFoundError(f"Model {model_name} not found")
 
     def model_exists(self, model_name: str) -> bool:
         """Check if a saved model exists"""
-        model_path = self.models_dir / f"{model_name}.pkl"
-        keras_path = self.models_dir / f"{model_name}.h5"
-        return model_path.exists() or keras_path.exists()
+        model_path = self.models_dir / model_name
+        return Path(f"{model_path}.pkl").exists() and Path(f"{model_path}_metadata.json").exists()

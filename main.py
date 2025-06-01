@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from collections import defaultdict
 import pandas as pd
 from config import CONFIG
 from data import DataDownloader, DataPreprocessor, FeatureEngineer
@@ -12,7 +13,8 @@ class StockPredictionCLI:
     def __init__(self):
         self.config = CONFIG
         self.model_io = ModelIO(CONFIG)
-        self.evaluator = ModelEvaluator(CONFIG)
+        self.evaluator = ModelEvaluator()
+        self.target_dict = {t['name']: t for t in self.config['targets']}
 
         # Model registry
         self.model_classes = {
@@ -43,12 +45,17 @@ class StockPredictionCLI:
 
     def print_commands(self):
         """Print available commands"""
+        print("-" * 50)
         print("\nAvailable commands:")
         print("  models     - Show model status")
-        print("  train      - Train a model (e.g., 'train xgboost')")
+        print("  train      - Train a model on a specific target (e.g., 'train xgboost return_1d' or 'train linear')")
         print("  evaluate   - Evaluate models (e.g., 'evaluate' or 'evaluate lstm xgboost')")
         print("  help       - Show this help message")
         print("  exit       - Exit program")
+        print("-" * 50)
+        print(f"Available models: {', '.join(self.model_classes.keys())}")
+        print(f"Available targets: {', '.join(self.target_dict.keys())}")
+        print("-" * 50)
 
     def _load_data(self):
         """Load preprocessed data or create it if doesn't exist"""
@@ -97,72 +104,89 @@ class StockPredictionCLI:
         """Load saved models and initialize pre-trained ones"""
         print("\nLoading models...")
 
-        for model_name in self.model_classes:
-            try:
-                # Try to load saved model
-                model = self.model_io.load_model(model_name)
-                self.trained_models[model_name] = model
-                print(f"  ✓ {model_name} loaded")
-            except FileNotFoundError:
-                # Check if it's a pre-trained model that should be initialized
-                if self._is_pretrained_available(model_name):
-                    model = self.model_classes[model_name](self.config)
-                    model.load_pretrained_from_web()  # Assuming this method exists
-                    self.trained_models[model_name] = model
-                    print(f"  ✓ {model_name} initialized (pre-trained)")
-                else:
-                    print(f"  ✗ {model_name} not found")
+        from models import LinearModel  # Add other imports as needed
 
-    def _is_pretrained_available(self, model_name):
-        """Check if pre-trained weights are available online"""
-        # Placeholder - implement based on actual pre-trained model availability
-        return False
+        for model_class in self.model_classes:
+            for target_name in self.target_dict:
+                model_name = f'{model_class}_{target_name}'
+                if self.model_io.model_exists(model_name):
+                    model_data, metadata = self.model_io.load_model(model_name)
+
+                    # Recreate model instance based on type
+                    if metadata['model_type'] == 'LinearModel':
+                        model = LinearModel(model_name, metadata['target_config'])
+                        model.model = model_data['model']
+                        model.scaler = model_data['scaler']
+                        model.feature_columns = metadata['feature_columns']
+                        model.target_column = metadata['target_column']
+                    # TODO: Add other model types
+
+                    self.trained_models[model_name] = {
+                        'model': model,
+                        'class': model_class,
+                        'target': target_name
+                    }
+                    print(f"  ✓ {model_name} loaded")
+
+        print(f"Loaded {len(self.trained_models)} models.")
 
     def cmd_models(self):
         """Show model status"""
+        model_class_targets = defaultdict(list)
+
+        for info in self.trained_models.values():
+            model_class = info['class']
+            target_name = info['target']
+            model_class_targets[model_class].append(target_name)
+
         print("\nModel Status:")
-        print("-" * 30)
+        print("-" * 50)
 
         print("Trained models:")
-        if self.trained_models:
-            for name in self.trained_models:
-                print(f"  • {name}")
+        if model_class_targets:
+            for model_class, target_names in model_class_targets.items():
+                print(f"  • {model_class}: {', '.join(target_names)}")
         else:
             print("  None")
 
         print("\nUntrained models:")
-        untrained = [name for name in self.model_classes if name not in self.trained_models]
+        untrained = [model_class for model_class in self.model_classes if model_class not in model_class_targets.keys()]
         if untrained:
-            for name in untrained:
-                print(f"  • {name}")
+            for model_class in untrained:
+                print(f"  • {model_class}")
         else:
             print("  None")
 
-    def cmd_train(self, model_name):
-        """Train a specific model"""
-        if model_name not in self.model_classes:
+    def cmd_train(self, model_class_name, target_name=None):
+        """Train a specific model for a specific target (or all if not specified)"""
+        if model_class_name not in self.model_classes:
             print(f"Error: Unknown model '{model_name}'")
             return
 
-        if model_name in self.trained_models:
-            print(f"Model '{model_name}' is already trained. Retraining...")
+        if target_name and target_name not in self.target_dict:
+            print(f"Error: Unknown target '{target_name}'")
+            return
 
-        print(f"\nTraining {model_name}...")
-
-        # Initialize model
-        model = self.model_classes[model_name](self.config)
+        target_names = self.target_dict.keys() if not target_name else [target_name]
 
         # Train for each target
-        for target_config in self.config['targets']:
-            target_name = target_config['name']
-            print(f"  Training for target: {target_name}")
+        for target_name in target_names:
+            model_name = f'{model_class_name}_{target_name}'
+
+            if model_name in self.trained_models.keys():
+                print(f"Model '{model_class_name}' is already trained for target '{target_name}'. Retraining...")
+            else:
+                print(f"\nTraining '{model_class_name}' for target: '{target_name}'.")
+
+            # Initialize model
+            model = self.model_classes[model_class_name](model_name, self.target_dict[target_name])
 
             # Prepare data
-            X, y = model.prepare_data(self.data, target_name)
-            splits = model.split_data(X, y, self.data.index)
+            X, y = model.prepare_data(self.data)
+            splits = model.split_data(self.config['models'], X, y, self.data.index)
 
             # Build model
-            model.build_model(X.shape[1:])
+            model.build_model()
 
             # Train
             history = model.train(
@@ -170,56 +194,77 @@ class StockPredictionCLI:
                 splits['X_val'], splits['y_val']
             )
 
-        # Save model
-        self.model_io.save_model(model, model_name, metadata={'targets': [t['name'] for t in self.config['targets']]})
-        self.trained_models[model_name] = model
-        print(f"Model '{model_name}' trained and saved.")
+            # Save model
+            self.model_io.save_model(model, model_name)
+            self.trained_models[model_name] = {'model': model, 'history': history, 'class': model_class_name, 'target': target_name}
+            print(f"Model '{model_name}' trained and saved.")
 
     def cmd_evaluate(self, model_names=None):
-        """Evaluate trained models"""
-        if model_names:
-            # Evaluate specific models
-            models_to_eval = []
-            for name in model_names:
-                if name in self.trained_models:
-                    models_to_eval.append(name)
-                else:
-                    print(f"Warning: Model '{name}' is not trained, skipping.")
+        """Evaluate trained models with enhanced metrics"""
+        # If no specific models requested, evaluate all trained models
+        if not model_names:
+            models_to_evaluate = list(self.trained_models.keys())
         else:
-            # Evaluate all trained models
-            models_to_eval = list(self.trained_models.keys())
+            # Build full model names from provided model class names
+            models_to_evaluate = []
+            for model_class in model_names:
+                for model_name, info in self.trained_models.items():
+                    if info['class'] == model_class:
+                        models_to_evaluate.append(model_name)
 
-        if not models_to_eval:
-            print("No trained models to evaluate.")
+        if not models_to_evaluate:
+            print("No models to evaluate.")
             return
 
-        print(f"\nEvaluating models: {', '.join(models_to_eval)}")
+        print(f"\nEvaluating {len(models_to_evaluate)} models...")
         print("-" * 50)
 
-        for model_name in models_to_eval:
-            model = self.trained_models[model_name]
-            print(f"\n{model_name.upper()}:")
+        for model_name in models_to_evaluate:
+            model_info = self.trained_models[model_name]
+            model = model_info['model']
 
-            # Evaluate for each target
-            for target_config in self.config['targets']:
-                target_name = target_config['name']
-                print(f"  Target: {target_name}")
+            # Prepare test data
+            X, y = model.prepare_data(self.data)
+            splits = model.split_data(self.config['models'], X, y, self.data.index)
 
-                # Get test data
-                X, y = model.prepare_data(self.data, target_name)
-                splits = model.split_data(X, y, self.data.index)
+            # Get test data subset for regime analysis
+            test_data = self.data.iloc[splits['idx_test']]
 
-                # Evaluate
-                results = self.evaluator.evaluate_model(
-                    model,
-                    splits['X_test'],
-                    splits['y_test'],
-                    target_config['type']
-                )
+            # Evaluate with enhanced metrics
+            metrics = self.evaluator.evaluate_model(
+                model,
+                splits['X_test'],
+                splits['y_test'],
+                test_data
+            )
 
-                # Display results
-                for metric, value in results.items():
-                    print(f"    {metric}: {value:.4f}")
+            # Display results
+            print(f"\n{model_name}:")
+            print(f"  Test samples: {len(splits['X_test'])}")
+
+            if model.target_config['type'] == 'regression':
+                print(f"  RMSE: {metrics['rmse']:.4f}")
+                print(f"  Directional Accuracy: {metrics['directional_accuracy']:.4f}")
+                print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.4f}")
+                print(f"  Hit Rate: {metrics['hit_rate']:.4f}")
+            else:
+                print(f"  Accuracy: {metrics['accuracy']:.4f}")
+                print(f"  Precision: {metrics['precision']:.4f}")
+                print(f"  F1 Score: {metrics['f1_score']:.4f}")
+
+            # Show regime analysis if available
+            if 'regime_analysis' in metrics:
+                print("\n  Performance by regime:")
+
+                if 'volatility_regimes' in metrics['regime_analysis']:
+                    print("    Volatility:")
+                    for regime, data in metrics['regime_analysis']['volatility_regimes'].items():
+                        print(f"      {regime}: {data['key_metric']:.4f} (n={data['n_samples']})")
+
+                if 'sectors' in metrics['regime_analysis']:
+                    print("    Sectors:")
+                    for sector, data in metrics['regime_analysis']['sectors'].items():
+                        print(f"      {sector}: {data['key_metric']:.4f} (n={data['n_samples']})")
 
     def run(self):
         """Main CLI loop"""
@@ -227,7 +272,7 @@ class StockPredictionCLI:
 
         commands = {
             'models': lambda args: self.cmd_models(),
-            'train': lambda args: self.cmd_train(args[0]) if args else print("Error: Specify model name"),
+            'train': lambda args: self.cmd_train(args[0], args[1]) if len(args) > 1 else self.cmd_train(args[0]),
             'evaluate': lambda args: self.cmd_evaluate(args) if len(args) > 0 else self.cmd_evaluate(),
             'help': lambda args: self.print_commands(),
             'exit': lambda args: sys.exit(0)

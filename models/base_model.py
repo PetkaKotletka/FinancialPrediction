@@ -1,40 +1,27 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, Tuple, Any
 
 
 class BaseModel(ABC):
-    def __init__(self, config: dict, model_name: str):
-        self.config = config
+    def __init__(self, model_name: str, target_config: Dict[str, Any]):
+        self.model_type = 'tabular'  # tabular, sequence, cnn
         self.model_name = model_name
+        self.target_config = target_config
         self.model = None
         self.feature_columns = None
         self.target_column = None
-        self.is_pretrained = False
 
     @abstractmethod
-    def prepare_data(self, df: pd.DataFrame, target: str) -> Tuple[np.ndarray, np.ndarray]:
+    def prepare_data(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """Transform dataframe into model-specific format"""
         pass
 
     @abstractmethod
-    def build_model(self, input_shape: tuple):
+    def build_model(self):
         """Build the model architecture"""
         pass
-
-    def load_pretrained(self, weights_path: str, fine_tune: bool = True):
-        """Load pre-trained weights"""
-        self.is_pretrained = True
-        # TODO: Implementation depends on model type
-        # For Keras: model.load_weights()
-        # For sklearn: joblib.load()
-        # Set fine_tune flag to freeze/unfreeze layers
-        pass
-
-    def load_pretrained_from_web(self):
-        """Load pre-trained weights from internet (override in subclasses if available)"""
-        raise NotImplementedError(f"No pre-trained weights available for {self.model_name}")
 
     @abstractmethod
     def train(self, X_train: np.ndarray, y_train: np.ndarray,
@@ -47,19 +34,11 @@ class BaseModel(ABC):
         """Make predictions"""
         pass
 
-    def fine_tune(self, X_train: np.ndarray, y_train: np.ndarray,
-                  X_val: np.ndarray = None, y_val: np.ndarray = None,
-                  learning_rate: float = 0.0001) -> Dict[str, float]:
-        """Fine-tune pre-trained model with lower learning rate"""
-        # TODO: Implement fine-tuning logic
-        # Lower learning rate, fewer epochs, freeze early layers
-        pass
-
-    def split_data(self, X: np.ndarray, y: np.ndarray, dates: pd.DatetimeIndex) -> Dict:
+    def split_data(self, models_config: Dict[str, float], X: np.ndarray, y: np.ndarray, dates: pd.DatetimeIndex) -> Dict:
         """Time-based train/val/test split"""
         n = len(X)
-        train_idx = int(n * self.config['models']['train_split'])
-        val_idx = int(n * (self.config['models']['train_split'] + self.config['models']['val_split']))
+        train_idx = int(n * models_config['train_split'])
+        val_idx = int(n * (models_config['train_split'] + models_config['val_split']))
 
         return {
             'X_train': X[:train_idx],
@@ -70,5 +49,41 @@ class BaseModel(ABC):
             'y_test': y[val_idx:],
             'dates_train': dates[:train_idx],
             'dates_val': dates[train_idx:val_idx],
-            'dates_test': dates[val_idx:]
+            'dates_test': dates[val_idx:],
+            'idx_test': np.arange(val_idx, n)
         }
+
+    def set_model_type_features(self, df: pd.DataFrame):
+        """Prepare features for specific model types"""
+        if self.model_type == 'tabular':
+            # Extract feature columns for tabular models
+            technical_features = ['RSI', 'MACD', 'MACD_signal', 'MACD_hist',
+                                  'BB_upper', 'BB_middle', 'BB_lower',
+                                  'SMA_short', 'SMA_long', 'OBV']
+
+            price_features = ['returns', 'log_returns', 'volume_ratio']
+
+            economic_features = ['VIXCLS', 'GDP', 'T10YIE']
+
+            # Get sector columns (one-hot encoded)
+            sector_features = [col for col in df.columns if col.startswith('sector_')]
+
+            self.feature_columns = (
+                technical_features + price_features +
+                economic_features + sector_features
+            )
+
+        elif self.model_type == 'sequence':
+            # TODO: Implement sequence preparation for RNNs
+            pass
+
+        elif self.model_type == 'cnn':
+            # TODO: Implement 2D representation for CNN
+            pass
+
+        elif self.model_type == 'arima':
+            # TODO: Implement price series extraction for ARIMA
+            pass
+
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
