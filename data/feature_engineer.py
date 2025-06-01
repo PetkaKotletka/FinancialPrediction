@@ -1,6 +1,6 @@
 import pandas as pd
 import pandas_ta as ta
-from typing import Dict
+from typing import List
 
 
 class FeatureEngineer:
@@ -54,3 +54,40 @@ class FeatureEngineer:
         """One-hot encode sectors"""
         sector_dummies = pd.get_dummies(df['sector'], prefix='sector')
         return pd.concat([df, sector_dummies], axis=1)
+
+    @classmethod
+    def get_feature_columns(cls, model_type: str) -> List[str]:
+        """Prepare feature columns based on model type"""
+
+        if model_type == 'tabular':
+            # Extract feature columns for tabular models
+            technical_features = ['RSI', 'MACD', 'MACD_signal', 'MACD_hist',
+                                  'BB_upper', 'BB_middle', 'BB_lower',
+                                  'SMA_short', 'SMA_long', 'OBV']
+
+            price_features = ['returns', 'log_returns', 'volume_ratio']
+
+            economic_features = ['VIXCLS', 'GDP', 'T10YIE']
+
+            # Get sector columns (one-hot encoded)
+            sector_features = ['sector_Automotive', 'sector_E-commerce', 'sector_Index', 'sector_Technology']
+
+            return (
+                technical_features + price_features +
+                economic_features + sector_features
+            )
+
+        elif model_type == 'sequence':
+            # TODO: Implement sequence preparation for RNNs
+            pass
+
+        elif model_type == 'cnn':
+            # TODO: Implement 2D representation for CNN
+            pass
+
+        elif model_type == 'arima':
+            # TODO: Implement price series extraction for ARIMA
+            pass
+
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")

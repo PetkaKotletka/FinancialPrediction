@@ -34,6 +34,19 @@ models:
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
+
+  decision_tree:
+    max_depth: 10
+    min_samples_split: 20
+    min_samples_leaf: 10
+
+  xgboost:
+    n_estimators: 1000
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    early_stopping_rounds: 50
   
 # Paths
 paths:

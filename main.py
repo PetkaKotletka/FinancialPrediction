@@ -4,7 +4,7 @@ from collections import defaultdict
 import pandas as pd
 from config import CONFIG
 from data import DataDownloader, DataPreprocessor, FeatureEngineer
-from models import LinearModel, ARIMAModel, XGBoostModel, LSTMModel, CNNModel
+from models import BaseModel, LinearModel, ARIMAModel, DecisionTreeModel, XGBoostModel, LSTMModel, CNNModel
 from evaluation import ModelEvaluator
 from utils import ModelIO
 
@@ -20,6 +20,7 @@ class StockPredictionCLI:
         self.model_classes = {
             'linear': LinearModel,
             'arima': ARIMAModel,
+            'tree': DecisionTreeModel,
             'xgboost': XGBoostModel,
             'lstm': LSTMModel,
             'cnn': CNNModel
@@ -101,25 +102,20 @@ class StockPredictionCLI:
             print("Data preprocessed and saved.")
 
     def _load_models(self):
-        """Load saved models and initialize pre-trained ones"""
+        """Load saved trained models"""
         print("\nLoading models...")
-
-        from models import LinearModel  # Add other imports as needed
 
         for model_class in self.model_classes:
             for target_name in self.target_dict:
                 model_name = f'{model_class}_{target_name}'
                 if self.model_io.model_exists(model_name):
-                    model_data, metadata = self.model_io.load_model(model_name)
+                    model_data = self.model_io.load_model(model_name)
 
-                    # Recreate model instance based on type
-                    if metadata['model_type'] == 'LinearModel':
-                        model = LinearModel(model_name, metadata['target_config'])
-                        model.model = model_data['model']
+                    model = self._init_model(model_class, model_name, target_name)
+                    model.model = model_data['model']
+
+                    if hasattr(model, 'scaler'):
                         model.scaler = model_data['scaler']
-                        model.feature_columns = metadata['feature_columns']
-                        model.target_column = metadata['target_column']
-                    # TODO: Add other model types
 
                     self.trained_models[model_name] = {
                         'model': model,
@@ -129,6 +125,11 @@ class StockPredictionCLI:
                     print(f"  ✓ {model_name} loaded")
 
         print(f"Loaded {len(self.trained_models)} models.")
+
+    def _init_model(self, model_class_name: str, model_name: str, target_name: str) -> BaseModel:
+        """Initialize model based on model name"""
+        model = self.model_classes[model_class_name](model_name, self.config['models'], self.target_dict[target_name])
+        return model
 
     def cmd_models(self):
         """Show model status"""
@@ -150,11 +151,13 @@ class StockPredictionCLI:
             print("  None")
 
         print("\nUntrained models:")
-        untrained = [model_class for model_class in self.model_classes if model_class not in model_class_targets.keys()]
-        if untrained:
-            for model_class in untrained:
+        found = False
+        for model_class in self.model_classes:
+            if model_class not in model_class_targets and self.model_classes[model_class].is_implemented:
                 print(f"  • {model_class}")
-        else:
+                found = True
+
+        if not found:
             print("  None")
 
     def cmd_train(self, model_class_name, target_name=None):
@@ -178,12 +181,11 @@ class StockPredictionCLI:
             else:
                 print(f"\nTraining '{model_class_name}' for target: '{target_name}'.")
 
-            # Initialize model
-            model = self.model_classes[model_class_name](model_name, self.target_dict[target_name])
+            model = self._init_model(model_class_name, model_name, target_name)
 
             # Prepare data
             X, y = model.prepare_data(self.data)
-            splits = model.split_data(self.config['models'], X, y, self.data.index)
+            splits = model.split_data(X, y, self.data.index)
 
             # Build model
             model.build_model()
@@ -225,7 +227,7 @@ class StockPredictionCLI:
 
             # Prepare test data
             X, y = model.prepare_data(self.data)
-            splits = model.split_data(self.config['models'], X, y, self.data.index)
+            splits = model.split_data(X, y, self.data.index)
 
             # Get test data subset for regime analysis
             test_data = self.data.iloc[splits['idx_test']]
