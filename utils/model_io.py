@@ -1,6 +1,7 @@
 import pickle
 import joblib
 from pathlib import Path
+import tensorflow as tf
 import json
 
 
@@ -14,11 +15,17 @@ class ModelIO:
         model_path = self.models_dir / model_name
 
         # Save model
-        model_data = {
-            'model': model.model
-        }
+        model_data = {}
 
-        # Save scaler for LinearModel
+        # Special handling for Keras models
+        if hasattr(model.model, 'save') and hasattr(model.model, 'fit'):
+            # It's a Keras model, save it separately
+            model.model.save(f"{model_path}_keras.h5")
+            model_data['model'] = 'keras'  # Placeholder to indicate Keras model
+        else:
+            model_data['model'] = model.model
+
+        # Save scaler for models that have it (linear and cnn)
         if hasattr(model, 'scaler'):
             model_data['scaler'] = model.scaler
 
@@ -30,6 +37,11 @@ class ModelIO:
 
         if self.model_exists(model_name):
             model_data = joblib.load(f"{model_path}.pkl")
+
+            # Load Keras model if needed
+            if model_data.get('model') == 'keras':
+                model_data['model'] = tf.keras.models.load_model(f"{model_path}_keras.h5", compile=False)
+
             return model_data
         else:
             raise FileNotFoundError(f"Model {model_name} not found")
