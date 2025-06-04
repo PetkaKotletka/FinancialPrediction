@@ -52,6 +52,12 @@ models:
     epochs: 50
     batch_size: 32
     window_size: 20
+
+  arima:
+    p: 5  # AR order
+    d: 1  # Differencing order
+    q: 1  # MA order
+    seasonal: false
   
 # Paths
 paths:

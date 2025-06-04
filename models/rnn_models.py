@@ -2,13 +2,6 @@ from .base_model import BaseModel
 
 
 class LSTMModel(BaseModel):
-    def __init__(self, config: dict):
-        super().__init__(config, 'lstm')
-
-    def prepare_data(self, df, target):
-        # TODO: Create sequences for LSTM
-        pass
-
     def build_model(self, input_shape):
         # TODO: Build LSTM architecture
         pass
@@ -23,13 +16,6 @@ class LSTMModel(BaseModel):
 
 
 class GRUModel(BaseModel):
-    def __init__(self, config: dict):
-        super().__init__(config, 'gru')
-
-    def prepare_data(self, df, target):
-        # TODO: Create sequences for GRU
-        pass
-
     def build_model(self, input_shape):
         # TODO: Build GRU architecture
         pass

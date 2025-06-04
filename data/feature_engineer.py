@@ -92,8 +92,8 @@ class FeatureEngineer:
             return technical_features + price_features + economic_features
 
         elif model_type == 'arima':
-            # TODO: Implement price series extraction for ARIMA
-            pass
+            # ARIMA only needs the price series
+            return ['Close']  # Will be handled specially in prepare_data
 
         else:
             raise ValueError(f"Unknown model type: {model_type}")

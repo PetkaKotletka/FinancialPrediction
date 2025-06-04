@@ -172,6 +172,11 @@ class StockPredictionCLI:
 
         target_names = self.target_dict.keys() if not target_name else [target_name]
 
+        if model_class_name == 'arima': # ARIMA can only be used for 1-day return prediction
+            if target_name != 'return_1d':
+                print("Warning: ARIMA can only be used for 1-day return prediction, changing target to 'return_1d'")
+            target_names = ['return_1d']
+
         # Train for each target
         for target_name in target_names:
             model_name = f'{model_class_name}_{target_name}'
