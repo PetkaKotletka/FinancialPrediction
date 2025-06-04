@@ -20,7 +20,7 @@ class ModelIO:
         # Special handling for Keras models
         if hasattr(model.model, 'save') and hasattr(model.model, 'fit'):
             # It's a Keras model, save it separately
-            model.model.save(f"{model_path}_keras.h5")
+            model.model.save(f"{model_path}_keras.keras")
             model_data['model'] = 'keras'  # Placeholder to indicate Keras model
         else:
             model_data['model'] = model.model
@@ -40,7 +40,7 @@ class ModelIO:
 
             # Load Keras model if needed
             if model_data.get('model') == 'keras':
-                model_data['model'] = tf.keras.models.load_model(f"{model_path}_keras.h5", compile=False)
+                model_data['model'] = tf.keras.models.load_model(f"{model_path}_keras.keras", compile=False)
 
             return model_data
         else:

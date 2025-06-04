@@ -12,10 +12,9 @@ This project implements and compares various machine learning models for stock m
 - **Data Pipeline**: Full preprocessing, feature engineering, and target creation
 - **CLI Interface**: Interactive command-line system for training and evaluation
 - **Evaluation System**: Comprehensive metrics including regime-based analysis
-
-### 🚧 Planned (TODO)
 - **ARIMA**: Statistical time series model
 - **LSTM**: Recurrent neural network for sequence modeling
+- **GRU**: Another recurrent neural network for sequence modeling
 - **CNN**: Convolutional neural network for time series
 
 ## Prediction Targets

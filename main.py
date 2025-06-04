@@ -4,7 +4,7 @@ from collections import defaultdict
 import pandas as pd
 from config import CONFIG
 from data import DataDownloader, DataPreprocessor, FeatureEngineer
-from models import BaseModel, LinearModel, ARIMAModel, DecisionTreeModel, XGBoostModel, LSTMModel, CNNModel
+from models import BaseModel, LinearModel, ARIMAModel, DecisionTreeModel, XGBoostModel, LSTMModel, GRUModel, CNNModel
 from evaluation import ModelEvaluator
 from utils import ModelIO
 
@@ -23,6 +23,7 @@ class StockPredictionCLI:
             'tree': DecisionTreeModel,
             'xgboost': XGBoostModel,
             'lstm': LSTMModel,
+            'gru': GRUModel,
             'cnn': CNNModel
         }
 
@@ -52,7 +53,7 @@ class StockPredictionCLI:
         print("  train      - Train a model on a specific target (e.g., 'train xgboost return_1d' or 'train linear')")
         print("  evaluate   - Evaluate models (e.g., 'evaluate' or 'evaluate lstm xgboost')")
         print("  help       - Show this help message")
-        print("  exit       - Exit program")
+        print("  exit (q)   - Exit program")
         print("-" * 50)
         print(f"Available models: {', '.join(self.model_classes.keys())}")
         print(f"Available targets: {', '.join(self.target_dict.keys())}")
@@ -282,7 +283,8 @@ class StockPredictionCLI:
             'train': lambda args: self.cmd_train(args[0], args[1]) if len(args) > 1 else self.cmd_train(args[0]),
             'evaluate': lambda args: self.cmd_evaluate(args) if len(args) > 0 else self.cmd_evaluate(),
             'help': lambda args: self.print_commands(),
-            'exit': lambda args: sys.exit(0)
+            'exit': lambda args: sys.exit(0),
+            'q': lambda args: sys.exit(0)
         }
 
         while True:

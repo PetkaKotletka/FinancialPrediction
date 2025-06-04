@@ -59,41 +59,25 @@ class FeatureEngineer:
     def get_feature_columns(cls, model_type: str) -> List[str]:
         """Prepare feature columns based on model type"""
 
-        if model_type == 'tabular':
-            technical_features = ['RSI', 'MACD', 'MACD_signal', 'MACD_hist',
-                                  'BB_upper', 'BB_middle', 'BB_lower',
-                                  'SMA_short', 'SMA_long', 'OBV']
-
-            price_features = ['returns', 'log_returns', 'volume_ratio']
-
-            economic_features = ['VIXCLS', 'GDP', 'T10YIE']
-
-            # Get sector columns (one-hot encoded)
-            sector_features = ['sector_Automotive', 'sector_E-commerce', 'sector_Index', 'sector_Technology']
-
-            return technical_features + price_features + economic_features + sector_features
-
-        elif model_type == 'sequence':
-            # TODO: Implement sequence preparation for RNNs
-            pass
-
-        elif model_type == 'cnn':
-            # CNN uses same features as tabular but will reshape them
-            technical_features = ['RSI', 'MACD', 'MACD_signal', 'MACD_hist',
-                                  'BB_upper', 'BB_middle', 'BB_lower',
-                                  'SMA_short', 'SMA_long', 'OBV']
-
-            price_features = ['returns', 'log_returns', 'volume_ratio']
-
-            economic_features = ['VIXCLS', 'GDP', 'T10YIE']
-
-            # CNN will use raw features without sector encoding
-            # (sector will be handled differently in CNN)
-            return technical_features + price_features + economic_features
-
-        elif model_type == 'arima':
-            # ARIMA only needs the price series
+        if model_type == 'arima':
             return ['Close']  # Will be handled specially in prepare_data
 
+        # Define feature groups
+        technical_features = ['RSI', 'MACD', 'MACD_signal', 'MACD_hist',
+                              'BB_upper', 'BB_middle', 'BB_lower',
+                              'SMA_short', 'SMA_long', 'OBV']
+        price_features = ['returns', 'log_returns', 'volume_ratio']
+        economic_features = ['VIXCLS', 'GDP', 'T10YIE']
+
+        # Base features used by all non-ARIMA models
+        base_features = technical_features + price_features + economic_features
+
+        if model_type == 'tabular':
+            # Only tabular models use sector encoding
+            sector_features = ['sector_Automotive', 'sector_E-commerce', 'sector_Index', 'sector_Technology']
+            return base_features + sector_features
+        elif model_type in ['sequence', 'cnn']:
+            # RNN and CNN use raw features without sector encoding
+            return base_features
         else:
             raise ValueError(f"Unknown model type: {model_type}")
