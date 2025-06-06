@@ -6,7 +6,7 @@ from config import CONFIG
 from data import DataDownloader, DataPreprocessor, FeatureEngineer
 from models import BaseModel, LinearModel, ARIMAModel, DecisionTreeModel, XGBoostModel, LSTMModel, GRUModel, CNNModel
 from evaluation import ModelEvaluator
-from utils import ModelIO
+from utils import ModelIO, ModelPlotter
 
 
 class StockPredictionCLI:
@@ -14,6 +14,7 @@ class StockPredictionCLI:
         self.config = CONFIG
         self.model_io = ModelIO(CONFIG)
         self.evaluator = ModelEvaluator()
+        self.plotter = ModelPlotter(CONFIG)
         self.target_dict = {t['name']: t for t in self.config['targets']}
 
         # Model registry
@@ -27,6 +28,11 @@ class StockPredictionCLI:
             'cnn': CNNModel
         }
 
+        # Plot types and methods of ModelPlotter
+        self.plot_methods = {
+            'scatter': 'scatter',
+        }
+
         self.trained_models = {}
         self.data = None
 
@@ -37,6 +43,7 @@ class StockPredictionCLI:
 
         # Load or preprocess data
         self._load_data()
+        self.plotter.data = self.data
 
         # Load saved models
         self._load_models()
@@ -52,11 +59,13 @@ class StockPredictionCLI:
         print("  models     - Show model status")
         print("  train      - Train a model on a specific target (e.g., 'train xgboost return_1d' or 'train linear')")
         print("  evaluate   - Evaluate models (e.g., 'evaluate' or 'evaluate lstm xgboost')")
+        print("  plot       - Generate price prediction plots (e.g., 'plot scatter xgboost')")
         print("  help       - Show this help message")
         print("  exit (q)   - Exit program")
         print("-" * 50)
         print(f"Available models: {', '.join(self.model_classes.keys())}")
         print(f"Available targets: {', '.join(self.target_dict.keys())}")
+        print(f"Available plots: {', '.join(self.plot_methods.keys())}")
         print("-" * 50)
 
     def _load_data(self):
@@ -110,7 +119,7 @@ class StockPredictionCLI:
             for target_name in self.target_dict:
                 model_name = f'{model_class}_{target_name}'
                 if self.model_io.model_exists(model_name):
-                    model_data = self.model_io.load_model(model_name)
+                    model_data = self.model_io.load_model(model_name, self.target_dict[target_name]['type'])
 
                     model = self._init_model(model_class, model_name, target_name)
                     model.model = model_data['model']
@@ -274,6 +283,30 @@ class StockPredictionCLI:
                     for sector, data in metrics['regime_analysis']['sectors'].items():
                         print(f"      {sector}: {data['key_metric']:.4f} (n={data['n_samples']})")
 
+    def cmd_plot(self, plot_type, model_class_name):
+        """Generate plots for a model"""
+        # Mapping of plot types to plotter methods
+
+        if plot_type not in self.plot_methods:
+            print(f"Error: Unknown plot type '{plot_type}'")
+            print(f"Available plot types: {', '.join(self.plot_methods.keys())}")
+            return
+
+        # Check if model exists for return_1d
+        model_name = f'{model_class_name}_return_1d'
+        if model_name not in self.trained_models:
+            print(f"Error: Model '{model_class_name}' not trained for return_1d")
+            return
+
+        print(f"\nGenerating {plot_type} plots for {model_class_name}...")
+        model = self.trained_models[model_name]['model']
+
+        # Call the appropriate plotter method
+        plotter_method = getattr(self.plotter, self.plot_methods[plot_type])
+        results = plotter_method(model)
+
+        print(f"Saved plot to: {results[0]}")
+
     def run(self):
         """Main CLI loop"""
         self.startup()
@@ -283,6 +316,7 @@ class StockPredictionCLI:
             'train': lambda args: self.cmd_train(args[0], args[1]) if len(args) > 1 else self.cmd_train(args[0]),
             'evaluate': lambda args: self.cmd_evaluate(args) if len(args) > 0 else self.cmd_evaluate(),
             'help': lambda args: self.print_commands(),
+            'plot': lambda args: self.cmd_plot(args[0], args[1]) if len(args) > 1 else print("Usage: plot <type> <model>"),
             'exit': lambda args: sys.exit(0),
             'q': lambda args: sys.exit(0)
         }

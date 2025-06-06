@@ -4,8 +4,8 @@ models/saved/
 *.h5
 *.joblib
 
-# Results
-results/
+# Plots
+plots/*
 
 # Python
 __pycache__/

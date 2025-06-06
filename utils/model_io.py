@@ -31,7 +31,7 @@ class ModelIO:
 
         joblib.dump(model_data, f"{model_path}.pkl")
 
-    def load_model(self, model_name: str):
+    def load_model(self, model_name: str, target_type: str):
         """Load model - returns model data"""
         model_path = self.models_dir / model_name
 
@@ -40,7 +40,23 @@ class ModelIO:
 
             # Load Keras model if needed
             if model_data.get('model') == 'keras':
-                model_data['model'] = tf.keras.models.load_model(f"{model_path}_keras.keras", compile=False)
+                loaded_model = tf.keras.models.load_model(f"{model_path}_keras.keras", compile=False)
+
+                # Recompile the model
+                if target_type == 'regression':
+                    loaded_model.compile(
+                        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                        loss='mse',
+                        metrics=['mae']
+                    )
+                else:  # classification
+                    loaded_model.compile(
+                        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                        loss='binary_crossentropy',
+                        metrics=['accuracy']
+                    )
+
+                model_data['model'] = loaded_model
 
             return model_data
         else:

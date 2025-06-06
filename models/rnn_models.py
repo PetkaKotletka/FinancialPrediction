@@ -151,6 +151,11 @@ class LSTMModel(BaseModel):
         X_scaled = X_scaled.reshape(n_samples, n_timesteps, n_features)
 
         predictions = self.model.predict(X_scaled, verbose=0)
+
+        # Convert probabilities to binary predictions for classification
+        if self.target_config['type'] == 'classification':
+            predictions = (predictions > 0.5).astype(int)
+
         return predictions.flatten()
 
 

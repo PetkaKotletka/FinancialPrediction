@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
+import re
 from typing import Dict, Tuple, Any
 
 from data import FeatureEngineer
@@ -11,6 +12,7 @@ class BaseModel(ABC):
 
     def __init__(self, model_name: str, models_config: dict, target_config: dict):
         self.model_name = model_name
+        self.model_class_name = re.match(r'^([^_]+)', model_name).group(1)
         self.models_config = models_config
         self.target_config = target_config
         self.model = None
