@@ -3,7 +3,7 @@ from pathlib import Path
 from collections import defaultdict
 import pandas as pd
 from config import CONFIG
-from data import DataDownloader, DataPreprocessor, FeatureEngineer
+from data import DataDownloader, DataPreprocessor, FeatureEngineer, DataSplitter
 from models import BaseModel, LinearModel, ARIMAModel, DecisionTreeModel, XGBoostModel, LSTMModel, GRUModel, CNNModel
 from evaluation import ModelEvaluator
 from utils import ModelIO, ModelPlotter
@@ -138,7 +138,7 @@ class StockPredictionCLI:
 
     def _init_model(self, model_class_name: str, model_name: str, target_name: str) -> BaseModel:
         """Initialize model based on model name"""
-        model = self.model_classes[model_class_name](model_name, self.config['models'], self.target_dict[target_name])
+        model = self.model_classes[model_class_name](model_name, self.config['data'], self.config['models'], self.target_dict[target_name])
         return model
 
     def cmd_models(self):
@@ -173,7 +173,7 @@ class StockPredictionCLI:
     def cmd_train(self, model_class_name, target_name=None):
         """Train a specific model for a specific target (or all if not specified)"""
         if model_class_name not in self.model_classes:
-            print(f"Error: Unknown model '{model_name}'")
+            print(f"Error: Unknown model '{model_class_name}'")
             return
 
         if target_name and target_name not in self.target_dict:
@@ -198,18 +198,24 @@ class StockPredictionCLI:
 
             model = self._init_model(model_class_name, model_name, target_name)
 
-            # Prepare data
-            X, y = model.prepare_data(self.data)
-            splits = model.split_data(X, y, self.data.index)
+            # Use date-based preparation
+            from data.data_splitter import DataSplitter
+            splitter = DataSplitter(self.config['data'])
+            split_dates = splitter.get_split_dates()
+
+            # Prepare training data (train + val periods)
+            train_data = splitter.filter_data_by_dates(self.data, split_dates['train_start'], split_dates['train_end'])
+            val_data = splitter.filter_data_by_dates(self.data, split_dates['val_start'], split_dates['val_end'])
+
+            # Prepare data for training
+            X_train, y_train = model.prepare_data(train_data)
+            X_val, y_val = model.prepare_data(val_data)
 
             # Build model
             model.build_model()
 
             # Train
-            history = model.train(
-                splits['X_train'], splits['y_train'],
-                splits['X_val'], splits['y_val']
-            )
+            history = model.train(X_train, y_train, X_val, y_val)
 
             # Save model
             self.model_io.save_model(model, model_name)
@@ -217,71 +223,51 @@ class StockPredictionCLI:
             print(f"Model '{model_name}' trained and saved.")
 
     def cmd_evaluate(self, model_names=None):
-        """Evaluate trained models with enhanced metrics"""
+        """Evaluate trained models with two-tier analysis"""
         # If no specific models requested, evaluate all trained models
         if not model_names:
-            models_to_evaluate = list(self.trained_models.keys())
+            models_to_evaluate = self.trained_models
         else:
-            # Build full model names from provided model class names
-            models_to_evaluate = []
+            # Build dict from provided model class names
+            models_to_evaluate = {}
             for model_class in model_names:
                 for model_name, info in self.trained_models.items():
                     if info['class'] == model_class:
-                        models_to_evaluate.append(model_name)
+                        models_to_evaluate[model_name] = info
 
         if not models_to_evaluate:
             print("No models to evaluate.")
             return
 
-        print(f"\nEvaluating {len(models_to_evaluate)} models...")
+        print(f"\nEvaluating {len(models_to_evaluate)} models with two-tier analysis...")
         print("-" * 50)
 
-        for model_name in models_to_evaluate:
-            model_info = self.trained_models[model_name]
-            model = model_info['model']
+        # Use new two-tier evaluation
+        results = self.evaluator.evaluate_models_two_tier(self.config['data'], models_to_evaluate, self.data)
 
-            # Prepare test data
-            X, y = model.prepare_data(self.data)
-            splits = model.split_data(X, y, self.data.index)
+        # Display summary
+        print(f"\n{'='*50}")
+        print("EVALUATION SUMMARY")
+        print(f"{'='*50}")
 
-            # Get test data subset for regime analysis
-            test_data = self.data.iloc[splits['idx_test']]
-
-            # Evaluate with enhanced metrics
-            metrics = self.evaluator.evaluate_model(
-                model,
-                splits['X_test'],
-                splits['y_test'],
-                test_data
-            )
-
-            # Display results
+        for model_name, result in results.items():
             print(f"\n{model_name}:")
-            print(f"  Test samples: {len(splits['X_test'])}")
 
-            if model.target_config['type'] == 'regression':
-                print(f"  RMSE: {metrics['rmse']:.4f}")
-                print(f"  Directional Accuracy: {metrics['directional_accuracy']:.4f}")
-                print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.4f}")
-                print(f"  Hit Rate: {metrics['hit_rate']:.4f}")
-            else:
-                print(f"  Accuracy: {metrics['accuracy']:.4f}")
-                print(f"  Precision: {metrics['precision']:.4f}")
-                print(f"  F1 Score: {metrics['f1_score']:.4f}")
+            if result['tier1']:
+                tier1 = result['tier1']
+                print(f"  Tier 1 ({result['available_dates']} dates): ", end="")
+                if 'directional_accuracy' in tier1:
+                    print(f"RMSE={tier1['rmse']:.4f}, Dir.Acc={tier1['directional_accuracy']:.4f}")
+                else:
+                    print(f"Accuracy={tier1['accuracy']:.4f}")
 
-            # Show regime analysis if available
-            if 'regime_analysis' in metrics:
-                print("\n  Performance by regime:")
-
-                if 'volatility_regimes' in metrics['regime_analysis']:
-                    print("    Volatility:")
-                    for regime, data in metrics['regime_analysis']['volatility_regimes'].items():
-                        print(f"      {regime}: {data['key_metric']:.4f} (n={data['n_samples']})")
-
-                if 'sectors' in metrics['regime_analysis']:
-                    print("    Sectors:")
-                    for sector, data in metrics['regime_analysis']['sectors'].items():
-                        print(f"      {sector}: {data['key_metric']:.4f} (n={data['n_samples']})")
+            if result['tier2']:
+                tier2 = result['tier2']
+                print(f"  Tier 2 (common dates): ", end="")
+                if 'directional_accuracy' in tier2:
+                    print(f"RMSE={tier2['rmse']:.4f}, Dir.Acc={tier2['directional_accuracy']:.4f}")
+                else:
+                    print(f"Accuracy={tier2['accuracy']:.4f}")
 
     def cmd_plot(self, plot_type, model_class_name):
         """Generate plots for a model"""

@@ -1,9 +1,15 @@
 # Data configuration
 data:
   tickers: ['AAPL', 'MSFT', 'AMZN', 'TSLA', '^GSPC', '^DJI', '^IXIC']
+  fred_indicators: ['VIXCLS', 'GDP', 'T10YIE']
   start_date: '2015-01-01'
   end_date: '2024-12-31'
-  fred_indicators: ['VIXCLS', 'GDP', 'T10YIE']
+  train_start: '2015-01-01'
+  train_end: '2021-06-30'
+  val_start: '2021-07-01'
+  val_end: '2023-03-31'
+  test_start: '2023-04-01'
+  test_end: '2024-12-31'
   
 # Feature engineering
 features:
@@ -70,7 +76,7 @@ models:
     dropout_rate: 0.2
 
   arima:
-    p: 5  # AR order
+    p: 1  # AR order
     d: 1  # Differencing order
     q: 1  # MA order
     seasonal: false

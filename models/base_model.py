@@ -4,13 +4,13 @@ import numpy as np
 import re
 from typing import Dict, Tuple, Any
 
-from data import FeatureEngineer
+from data import FeatureEngineer, DataSplitter
 
 
 class BaseModel(ABC):
     is_implemented = False
 
-    def __init__(self, model_name: str, models_config: dict, target_config: dict):
+    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
         self.model_name = model_name
         self.model_class_name = re.match(r'^([^_]+)', model_name).group(1)
         self.models_config = models_config
@@ -18,6 +18,7 @@ class BaseModel(ABC):
         self.model = None
         self.target_column = target_config['name']
         self.feature_columns = FeatureEngineer.get_feature_columns(self.get_model_type())
+        self.data_splitter = DataSplitter(data_config)
 
     def get_model_type(self):
         """Get model type (tabular, sequence, cnn, arima)"""
@@ -36,6 +37,26 @@ class BaseModel(ABC):
 
         return X, y
 
+    def prepare_data_for_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Prepare data for specific date range - override in models with constraints"""
+        # Filter data to date range first
+        filtered_df = self.data_splitter.filter_data_by_dates(df, start_date, end_date)
+
+        # Then prepare data normally
+        return self.prepare_data(filtered_df)
+
+    def get_available_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> pd.DatetimeIndex:
+        """Return dates this model can actually predict for in given range"""
+        # Default: all dates in range (override in sequence models)
+        filtered_df = self.data_splitter.filter_data_by_dates(df, start_date, end_date)
+        X, y = self.prepare_data(filtered_df)
+
+        # Get the dates that have valid data after prepare_data cleaning
+        data_with_target = filtered_df[self.feature_columns + [self.target_column]].copy()
+        clean_data = data_with_target.dropna()
+
+        return clean_data.index
+
     @abstractmethod
     def build_model(self):
         """Build the model architecture"""
@@ -53,20 +74,18 @@ class BaseModel(ABC):
         pass
 
     def split_data(self, X: np.ndarray, y: np.ndarray, dates: pd.DatetimeIndex) -> Dict:
-        """Time-based train/val/test split"""
-        n = len(X)
-        train_idx = int(n * self.models_config['train_split'])
-        val_idx = int(n * (self.models_config['train_split'] + self.models_config['val_split']))
+        """Date-based train/val/test split using fixed boundaries"""
+        masks = self.data_splitter.get_date_masks(dates)
 
         return {
-            'X_train': X[:train_idx],
-            'y_train': y[:train_idx],
-            'X_val': X[train_idx:val_idx],
-            'y_val': y[train_idx:val_idx],
-            'X_test': X[val_idx:],
-            'y_test': y[val_idx:],
-            'dates_train': dates[:train_idx],
-            'dates_val': dates[train_idx:val_idx],
-            'dates_test': dates[val_idx:],
-            'idx_test': np.arange(val_idx, n)
+            'X_train': X[masks['train']],
+            'y_train': y[masks['train']],
+            'X_val': X[masks['val']],
+            'y_val': y[masks['val']],
+            'X_test': X[masks['test']],
+            'y_test': y[masks['test']],
+            'dates_train': dates[masks['train']],
+            'dates_val': dates[masks['val']],
+            'dates_test': dates[masks['test']],
+            'idx_test': np.where(masks['test'])[0]
         }

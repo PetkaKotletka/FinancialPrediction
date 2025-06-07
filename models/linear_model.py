@@ -8,8 +8,8 @@ from sklearn.preprocessing import StandardScaler
 class LinearModel(BaseModel):
     is_implemented = True
 
-    def __init__(self, model_name: str, models_config: dict, target_config: dict):
-        super().__init__(model_name, models_config, target_config)
+    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
+        super().__init__(model_name, data_config, models_config, target_config)
         self.scaler = StandardScaler()
 
     def build_model(self):

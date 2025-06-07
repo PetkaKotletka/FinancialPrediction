@@ -7,39 +7,77 @@ from statsmodels.tsa.arima.model import ARIMA
 class ARIMAModel(BaseModel):
     is_implemented = True
 
-    def __init__(self, model_name: str, models_config: dict, target_config: dict):
-        super().__init__(model_name, models_config, target_config)
+    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
+        super().__init__(model_name, data_config, models_config, target_config)
         self.arima_config = models_config['arima']
         self.fitted_values = None
         self.training_index = None
+        self.models = {}
+        self.ticker_data = {}
+        self.current_ticker = None
 
     def get_model_type(self):
         """ARIMA uses time series data"""
         return 'arima'
 
     def prepare_data(self, df: pd.DataFrame):
-        """Extract price series for ARIMA"""
-        # For ARIMA, we need continuous price series for each ticker
-        # We'll return the price series and corresponding target values
+        """Extract and organize price series by ticker"""
 
-        # Get unique tickers
-        tickers = df['ticker'].unique()
+        # Reset for new data preparation
+        self.ticker_data = {}
 
-        # For now, use the first ticker (SPY or AAPL typically)
-        # In production, might want to fit separate ARIMA per ticker
-        ticker_data = df[df['ticker'] == tickers[0]].copy()
+        # Group by ticker and extract price/return series
+        for ticker in df['ticker'].unique():
+            ticker_df = df[df['ticker'] == ticker].copy()
+            clean_data = ticker_df[['Close', self.target_column]].dropna()
 
-        # Remove any NaN values
-        ticker_data = ticker_data[['Close', self.target_column]].dropna()
+            if len(clean_data) > 0:
+                self.ticker_data[ticker] = {
+                    'prices': clean_data['Close'].values,
+                    'returns': clean_data[self.target_column].values
+                }
 
-        # X is the price series, y is the target
-        X = ticker_data[['Close']].values
-        y = ticker_data[self.target_column].values
+        # For interface compatibility, return combined data
+        # But store current ticker for prediction routing
+        if len(self.ticker_data) == 1:
+            # Single ticker case (like in scatter plot)
+            self.current_ticker = list(self.ticker_data.keys())[0]
+            ticker_data = self.ticker_data[self.current_ticker]
+            return ticker_data['prices'].reshape(-1, 1), ticker_data['returns']
+        else:
+            # Multi-ticker case (like in training)
+            all_prices = []
+            all_returns = []
+            for ticker_data in self.ticker_data.values():
+                all_prices.extend(ticker_data['prices'])
+                all_returns.extend(ticker_data['returns'])
+            return np.array(all_prices).reshape(-1, 1), np.array(all_returns)
 
-        # Store the index for later use
-        self.training_index = ticker_data.index
+    def prepare_data_for_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> tuple:
+        """Prepare ARIMA data for specific date range"""
+        filtered_df = self.data_splitter.filter_data_by_dates(df, start_date, end_date)
 
-        return X, y
+        # Use original prepare_data logic on filtered data
+        return self.prepare_data(filtered_df)
+
+    def get_available_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> pd.DatetimeIndex:
+        """Return dates ARIMA can predict for"""
+        filtered_df = self.data_splitter.filter_data_by_dates(df, start_date, end_date)
+
+        if self.current_ticker:
+            # Single ticker mode
+            ticker_data = filtered_df[filtered_df['ticker'] == self.current_ticker]
+            clean_data = ticker_data[['Close', self.target_column]].dropna()
+            return clean_data.index
+        else:
+            # Multi-ticker mode - return union of all available dates
+            all_dates = []
+            for ticker in filtered_df['ticker'].unique():
+                ticker_data = filtered_df[filtered_df['ticker'] == ticker]
+                clean_data = ticker_data[['Close', self.target_column]].dropna()
+                all_dates.extend(clean_data.index)
+
+            return pd.DatetimeIndex(sorted(set(all_dates)))
 
     def build_model(self):
         """ARIMA doesn't pre-build, it fits directly on data"""
@@ -53,64 +91,73 @@ class ARIMAModel(BaseModel):
 
     def train(self, X_train: np.ndarray, y_train: np.ndarray,
           X_val: np.ndarray = None, y_val: np.ndarray = None) -> dict:
-        """Fit ARIMA model on price series"""
-        # Extract price series
-        price_series = X_train.flatten()
+        """Train separate ARIMA model for each ticker in training data"""
+        results = {}
 
-        # Fit ARIMA model
-        model = ARIMA(
-            price_series,
-            order=(self.arima_config['p'],
-                   self.arima_config['d'],
-                   self.arima_config['q'])
-        )
+        for ticker in self.ticker_data.keys():  # For each ticker we found during prepare_data
+            ticker_prices = self.ticker_data[ticker]['prices']
+            ticker_returns = self.ticker_data[ticker]['returns']
 
-        self.model = model.fit()
+            try:
+                # Train ARIMA on this ticker's price series
+                arima_model = ARIMA(
+                    ticker_prices,
+                    order=(self.arima_config['p'],
+                           self.arima_config['d'],
+                           self.arima_config['q'])
+                ).fit()
 
-        start_idx = max(self.arima_config['p'], self.arima_config['d'])
+                self.models[ticker] = {
+                    'model': arima_model,
+                    'training_prices': ticker_prices
+                }
 
-        # In-sample 1-day returns from fitted values
-        train_pred_prices = self.model.fittedvalues[start_idx:]
-        train_actual_prices = price_series[start_idx-1:-1]
-        train_pred = (train_pred_prices / train_actual_prices) - 1
-        train_actual = y_train[start_idx:]
+                # Forecast next price for validation
+                if len(ticker_prices) > 0:
+                    next_price = arima_model.forecast(steps=1)[0]
+                    pred_return = (next_price / ticker_prices[-1]) - 1
+                    results[f'{ticker}_val_sample'] = pred_return
 
-        train_rmse = np.sqrt(np.mean((train_actual - train_pred) ** 2))
+            except Exception as e:
+                print(f"Failed to train ARIMA for {ticker}: {e}")
+                # Store a dummy model that predicts zero
+                self.models[ticker] = None
 
-        # Validation metrics
-        if X_val is not None:
-            val_steps = len(X_val)
-            forecast = self.model.forecast(steps=val_steps)
-            val_prices = X_val.flatten()
-
-            # 1-day returns: each forecast compared to previous actual price
-            val_pred = []
-            last_price = price_series[-1]
-            for i, forecast_price in enumerate(forecast):
-                val_pred.append((forecast_price / last_price) - 1)
-                last_price = val_prices[i] if i < len(val_prices) - 1 else last_price
-
-            val_pred = np.array(val_pred)
-            val_rmse = np.sqrt(np.mean((y_val - val_pred) ** 2))
-        else:
-            val_rmse = train_rmse
-
-        return {
-            'train_rmse': train_rmse,
-            'val_rmse': val_rmse
-        }
+        return {'trained_tickers': len(self.models)}
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """Forecast using ARIMA - 1-day returns only"""
-        n_periods = len(X)
-        forecast = self.model.forecast(steps=n_periods)
+        """Route predictions to appropriate ticker's ARIMA model"""
 
-        # For 1-day returns, we need price(t+1) / price(t) - 1
-        # Build the full price series: last training price + all forecasts
-        last_training_price = self.model.data.endog[-1]
-        price_series = np.concatenate([[last_training_price], forecast])
+        if self.current_ticker not in self.models or self.models[self.current_ticker] is None:
+            # No model for this ticker, return zeros
+            return np.zeros(len(X))
 
-        # Calculate 1-day returns
-        returns = (price_series[1:] / price_series[:-1]) - 1
+        ticker_model = self.models[self.current_ticker]['model']
+        training_prices = self.models[self.current_ticker]['training_prices']
 
-        return returns
+        predictions = []
+        current_prices = training_prices.copy()
+        test_prices = X.flatten()
+
+        for i in range(len(test_prices)):
+            try:
+                # Refit ARIMA with updated price series (rolling approach)
+                updated_model = ARIMA(
+                    current_prices,
+                    order=(self.arima_config['p'],
+                           self.arima_config['d'],
+                           self.arima_config['q'])
+                ).fit()
+
+                # Forecast next price
+                next_price = updated_model.forecast(steps=1)[0]
+                pred_return = (next_price / current_prices[-1]) - 1
+                predictions.append(pred_return)
+
+            except:
+                predictions.append(0.0)
+
+            # Update with actual observed price
+            current_prices = np.append(current_prices, test_prices[i])
+
+        return np.array(predictions)

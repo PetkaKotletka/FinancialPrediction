@@ -5,13 +5,14 @@ from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+from datetime import datetime, timedelta
 
 
 class LSTMModel(BaseModel):
     is_implemented = True
 
-    def __init__(self, model_name: str, models_config: dict, target_config: dict):
-        super().__init__(model_name, models_config, target_config)
+    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
+        super().__init__(model_name, data_config, models_config, target_config)
         self.scaler = StandardScaler()
         config = self.models_config['lstm']
         self.window_size = config['window_size']
@@ -56,6 +57,71 @@ class LSTMModel(BaseModel):
         y = np.array(targets)
 
         return X, y
+
+    def prepare_data_for_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> tuple:
+        """Prepare sequence data ensuring targets fall within date range"""
+
+        # Need extra history for windowing - expand start date
+        buffer_days = self.window_size + 5  # Add buffer for safety
+        expanded_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=buffer_days)).strftime('%Y-%m-%d')
+
+        # Get data from expanded start to end date
+        expanded_df = self.data_splitter.filter_data_by_dates(df, expanded_start, end_date)
+
+        # Use original prepare_data logic but filter results
+        feature_cols = self.feature_columns + ['ticker']
+        data_with_target = expanded_df[feature_cols + [self.target_column]].copy()
+
+        sequences = []
+        targets = []
+        target_dates = []  # Track which dates each target corresponds to
+
+        for ticker in expanded_df['ticker'].unique():
+            ticker_data = data_with_target[data_with_target['ticker'] == ticker].copy()
+            ticker_data = ticker_data.drop('ticker', axis=1)
+            ticker_data = ticker_data.dropna()
+
+            if len(ticker_data) < self.window_size:
+                continue
+
+            # Create sliding windows
+            for i in range(len(ticker_data) - self.window_size):
+                target_date = ticker_data.index[i + self.window_size]
+
+                # Only include if target date falls in desired range
+                if start_date <= target_date.strftime('%Y-%m-%d') <= end_date:
+                    seq = ticker_data.iloc[i:i + self.window_size][self.feature_columns].values
+                    target = ticker_data.iloc[i + self.window_size][self.target_column]
+
+                    sequences.append(seq)
+                    targets.append(target)
+                    target_dates.append(target_date)
+
+        X = np.array(sequences) if sequences else np.empty((0, self.window_size, len(self.feature_columns)))
+        y = np.array(targets) if targets else np.empty((0,))
+
+        return X, y
+
+    def get_available_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> pd.DatetimeIndex:
+        """Return dates this model can predict for (accounting for windowing)"""
+        filtered_df = self.data_splitter.filter_data_by_dates(df, start_date, end_date)
+
+        available_dates = []
+        feature_cols = self.feature_columns + ['ticker']
+        data_with_target = filtered_df[feature_cols + [self.target_column]].copy()
+
+        for ticker in filtered_df['ticker'].unique():
+            ticker_data = data_with_target[data_with_target['ticker'] == ticker].copy()
+            ticker_data = ticker_data.drop('ticker', axis=1)
+            ticker_data = ticker_data.dropna()
+
+            # Only dates after window_size can be predicted
+            if len(ticker_data) > self.window_size:
+                # Target dates start at window_size offset
+                target_dates = ticker_data.index[self.window_size:]
+                available_dates.extend(target_dates)
+
+        return pd.DatetimeIndex(sorted(set(available_dates)))
 
     def build_model(self):
         """Build LSTM architecture"""
@@ -163,9 +229,8 @@ class GRUModel(LSTMModel):
     """GRU Model - inherits from LSTM with only architecture difference"""
     is_implemented = True
 
-    def __init__(self, model_name: str, models_config: dict, target_config: dict):
-        # Use parent init but update config name
-        super().__init__(model_name, models_config, target_config)
+    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
+        super().__init__(model_name, data_config, models_config, target_config)
         config = self.models_config['gru']
         self.window_size = config['window_size']
         self.batch_size = config['batch_size']
