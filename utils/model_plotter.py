@@ -10,27 +10,6 @@ class ModelPlotter:
     def __init__(self, config):
         self.config = config
         self.data = None
-        # self.volatility_colors = {
-        #     'Low': '#2ecc71',
-        #     'Medium': '#f39c12',
-        #     'High': '#e74c3c'
-        # }
-
-    def _check_model_test_data(self, model):
-        """Check how much test data each model can actually use"""
-        splitter = DataSplitter(self.config['data'])
-        split_dates = splitter.get_split_dates()
-
-        print(f"Test data availability for {model.model_class_name}:")
-        print(f"Test period: {split_dates['test_start']} to {split_dates['test_end']}")
-
-        for ticker in self.config['data']['tickers']:
-            available_dates = model.get_available_dates(
-                self.data[self.data['ticker'] == ticker],
-                split_dates['test_start'],
-                split_dates['test_end']
-            )
-            print(f"  {ticker}: {len(available_dates)} available dates")
 
     def scatter(self, model):
         """Generate scatter plots of predicted vs actual returns for each ticker"""
@@ -42,11 +21,8 @@ class ModelPlotter:
         splitter = DataSplitter(self.config['data'])
         split_dates = splitter.get_split_dates()
 
-        # Check what data is available
-        self._check_model_test_data(model)
-
         # Get tickers
-        tickers = self.config['data']['tickers']
+        tickers = list(self.config['data']['tickers'].keys())
 
         # Create figure with subplots
         fig, axes = plt.subplots(2, 4, figsize=(16, 8))
@@ -57,8 +33,12 @@ class ModelPlotter:
         plot_data = {}
 
         for ticker in tickers:
-            # Get ticker data for test period only
-            ticker_data = self.data[self.data['ticker'] == ticker].copy()
+            # Get ticker data from dict
+            if ticker not in self.data:
+                print(f"Warning: No data for {ticker}")
+                continue
+
+            ticker_data = self.data[ticker].copy()
             test_ticker_data = splitter.filter_data_by_dates(
                 ticker_data,
                 split_dates['test_start'],
@@ -71,7 +51,9 @@ class ModelPlotter:
 
             # Prepare data for this ticker's test period
             try:
-                X, y = model.prepare_data(test_ticker_data)
+                # Create single-ticker dict for model.prepare_data
+                test_data_dict = {ticker: test_ticker_data}
+                X, y = model.prepare_data(test_data_dict)
 
                 if len(X) == 0 or len(y) == 0:
                     print(f"Warning: No valid predictions for {ticker}")
@@ -177,7 +159,7 @@ class ModelPlotter:
         split_dates = splitter.get_split_dates()
 
         # Get tickers
-        tickers = self.config['data']['tickers']
+        tickers = list(self.config['data']['tickers'].keys())
 
         # Create figure with subplots
         fig, axes = plt.subplots(2, 4, figsize=(20, 10))
@@ -188,7 +170,11 @@ class ModelPlotter:
 
         # Collect data for all tickers
         for ticker in tickers:
-            ticker_data = self.data[self.data['ticker'] == ticker].copy()
+            if ticker not in self.data:
+                print(f"Warning: No data for {ticker}")
+                continue
+
+            ticker_data = self.data[ticker].copy()
             test_ticker_data = splitter.filter_data_by_dates(
                 ticker_data,
                 split_dates['test_start'],
@@ -199,7 +185,9 @@ class ModelPlotter:
                 continue
 
             try:
-                X, y = model.prepare_data(test_ticker_data)
+                # Create single-ticker dict for model.prepare_data
+                test_data_dict = {ticker: test_ticker_data}
+                X, y = model.prepare_data(test_data_dict)
                 if len(X) == 0:
                     continue
 
@@ -272,6 +260,7 @@ class ModelPlotter:
             data = plot_data[ticker]
 
             # Calculate R² score
+            from sklearn.metrics import r2_score
             r2 = r2_score(data['actual_prices'], data['pred_prices'])
             r2_scores[ticker] = r2
 
@@ -326,3 +315,45 @@ class ModelPlotter:
 
         print(f"Line chart plotted for {len(plotted_tickers)} tickers: {', '.join(plotted_tickers)}")
         return [str(plot_path)]
+
+    def plot_backtest_results(self, backtest_results: dict, model_name: str, strategy_name: str):
+        """Plot equity curve and drawdown for backtest results"""
+        equity_df = backtest_results['equity_curve']
+        metrics = backtest_results['metrics']
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8),
+                                       gridspec_kw={'height_ratios': [3, 1]})
+
+        # Equity curve
+        ax1.plot(equity_df['date'], equity_df['portfolio_value'],
+                 label='Portfolio Value', linewidth=2)
+        ax1.set_ylabel('Portfolio Value ($)')
+        ax1.set_title(f'{model_name} - {strategy_name} Strategy Performance\n'
+                      f'Total Return: {metrics["total_return"]:.2%} | '
+                      f'Sharpe: {metrics["sharpe_ratio"]:.2f} | '
+                      f'Max DD: {metrics["max_drawdown"]:.2%}')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+
+        # Drawdown
+        equity_df['returns'] = equity_df['portfolio_value'].pct_change()
+        cumulative = (1 + equity_df['returns']).cumprod()
+        running_max = cumulative.expanding().max()
+        drawdown = (cumulative - running_max) / running_max
+
+        ax2.fill_between(equity_df['date'], 0, drawdown * 100,
+                         color='red', alpha=0.3)
+        ax2.set_ylabel('Drawdown (%)')
+        ax2.set_xlabel('Date')
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+
+        # Save plot
+        plots_dir = Path(self.config['paths']['plots_dir']) / 'backtest'
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        plot_path = plots_dir / f'{model_name}_{strategy_name}_backtest.png'
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        return str(plot_path)

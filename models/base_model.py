@@ -13,49 +13,70 @@ class BaseModel(ABC):
     def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
         self.model_name = model_name
         self.model_class_name = re.match(r'^([^_]+)', model_name).group(1)
+        self.data_config = data_config
         self.models_config = models_config
         self.target_config = target_config
         self.model = None
         self.target_column = target_config['name']
-        self.feature_columns = FeatureEngineer.get_feature_columns(self.get_model_type())
+        self.all_sectors = list(set(data_config['tickers'].values()))
+        self.feature_columns = FeatureEngineer.get_feature_columns(
+            self.get_model_type(),
+            self.all_sectors
+        )
         self.data_splitter = DataSplitter(data_config)
 
     def get_model_type(self):
         """Get model type (tabular, sequence, cnn, arima)"""
         return 'tabular'
 
-    def prepare_data(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-        """Transform dataframe into model-specific format"""
+    def prepare_data(self, data_dict: Dict[str, pd.DataFrame]) -> Tuple[np.ndarray, np.ndarray]:
+        """Universal data preparation - all models get same date coverage"""
+        if self.get_model_type() == 'arima':
+            # ARIMA: store per-ticker data
+            self.ticker_data = {}
+            for ticker, df in data_dict.items():
+                clean_data = df[['Close', self.target_column]].dropna()
+                self.ticker_data[ticker] = {
+                    'prices': clean_data['Close'].values,
+                    'returns': clean_data[self.target_column].values
+                }
+            # Return dummy data for interface compatibility
+            return np.array([]), np.array([])
 
-        # Combine with target and remove NaN rows
-        data_with_target = df[self.feature_columns + [self.target_column]].copy()
-        data_clean = data_with_target.dropna()
+        elif self.get_model_type() in ['sequence', 'cnn']:
+            # Sequence models: create windows per ticker
+            sequences, targets = [], []
+            for ticker, df in data_dict.items():
+                clean_data = df[self.feature_columns + [self.target_column]].dropna()
+                if len(clean_data) >= self.window_size:
+                    # Create sequences - targets cover ALL available dates
+                    for i in range(self.window_size, len(clean_data)):
+                        seq = clean_data.iloc[i-self.window_size:i][self.feature_columns].values
+                        target = clean_data.iloc[i][self.target_column]
+                        sequences.append(seq)
+                        targets.append(target)
+            return np.array(sequences), np.array(targets)
 
-        # Extract X and y
-        X = data_clean[self.feature_columns].values
-        y = data_clean[self.target_column].values
+        else:
+            # Tabular models: concatenate with sector encoding
+            all_X, all_y = [], []
+            for ticker, df in data_dict.items():
+                df_copy = df.copy()
+                df_copy['sector'] = self.data_config['tickers'].get(ticker, 'Unknown')
 
-        return X, y
+                # Create all sector columns for this ticker
+                for sector in self.all_sectors:
+                    df_copy[f'sector_{sector}'] = 1 if df_copy['sector'].iloc[0] == sector else 0
 
-    def prepare_data_for_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare data for specific date range - override in models with constraints"""
-        # Filter data to date range first
-        filtered_df = self.data_splitter.filter_data_by_dates(df, start_date, end_date)
+                feature_data = df_copy[self.feature_columns]
+                clean_data = pd.concat([feature_data, df_copy[[self.target_column]]], axis=1).dropna()
 
-        # Then prepare data normally
-        return self.prepare_data(filtered_df)
+                if len(clean_data) > 0:
+                    all_X.append(clean_data.iloc[:, :-1].values)
+                    all_y.append(clean_data[self.target_column].values)
 
-    def get_available_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> pd.DatetimeIndex:
-        """Return dates this model can actually predict for in given range"""
-        # Default: all dates in range (override in sequence models)
-        filtered_df = self.data_splitter.filter_data_by_dates(df, start_date, end_date)
-        X, y = self.prepare_data(filtered_df)
-
-        # Get the dates that have valid data after prepare_data cleaning
-        data_with_target = filtered_df[self.feature_columns + [self.target_column]].copy()
-        clean_data = data_with_target.dropna()
-
-        return clean_data.index
+            return np.vstack(all_X) if all_X else np.empty((0, len(self.feature_columns))), \
+                   np.concatenate(all_y) if all_y else np.empty((0,))
 
     @abstractmethod
     def build_model(self):

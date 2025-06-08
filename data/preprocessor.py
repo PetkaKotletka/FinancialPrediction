@@ -7,9 +7,9 @@ class DataPreprocessor:
     def __init__(self, config: dict):
         self.config = config
 
-    def clean_data(self, stock_data: Dict[str, pd.DataFrame], fred_data: pd.DataFrame) -> pd.DataFrame:
-        """Merge and clean all data sources"""
-        all_data = []
+    def clean_data(self, stock_data: Dict[str, pd.DataFrame], fred_data: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """Merge and clean all data sources - return dict of DataFrames per ticker"""
+        processed_data = {}
 
         for ticker, df in stock_data.items():
             # Merge with FRED data
@@ -24,34 +24,44 @@ class DataPreprocessor:
             df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
             df['volume_ratio'] = df['Volume'] / df['Volume'].rolling(20).mean()
 
-            all_data.append(df)
+            processed_data[ticker] = df
 
-        return pd.concat(all_data, axis=0).sort_index()
+        return processed_data
 
-    def create_targets(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create prediction targets"""
-        # 1-day return
-        df['return_1d'] = df.groupby('ticker')['Close'].pct_change(1).shift(-1)
+    def create_targets(self, data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """Create prediction targets for each ticker"""
+        for ticker, df in data_dict.items():
+            # 1-day return
+            df['return_1d'] = df['Close'].pct_change(1).shift(-1)
 
-        # 1-day direction
-        df['direction_1d'] = (df['return_1d'] > 0).astype(int)
+            # 1-day direction
+            df['direction_1d'] = (df['return_1d'] > 0).astype(int)
 
-        # 5-day return
-        df['return_5d'] = df.groupby('ticker')['Close'].pct_change(5).shift(-5)
+            # 5-day return
+            df['return_5d'] = df['Close'].pct_change(5).shift(-5)
 
-        return df
+            data_dict[ticker] = df
 
-    def create_regime_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add market regime features"""
-        # Volatility regime
-        df['volatility_regime'] = pd.cut(
-            df['VIXCLS'],
-            bins=[0, 15, 25, 100],
-            labels=['Low', 'Medium', 'High']
-        )
+        return data_dict
 
-        # Economic regime
-        df['gdp_growth'] = df['GDP'].pct_change()
-        df['economic_regime'] = (df['gdp_growth'] > 0).astype(int)
+    def create_regime_features(self, data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """Add market regime features to each ticker's data"""
+        for ticker, df in data_dict.items():
+            # Volatility regime
+            df['volatility_regime'] = pd.cut(
+                df['VIXCLS'],
+                bins=[0, 15, 25, 100],
+                labels=['Low', 'Medium', 'High']
+            )
 
-        return df
+            # Economic regime
+            df['gdp_growth'] = df['GDP'].diff()
+            df['economic_regime'] = np.nan
+            df.loc[df['gdp_growth'] > 0, 'economic_regime'] = 1  # Expansion
+            df.loc[df['gdp_growth'] < 0, 'economic_regime'] = 0  # Contraction
+            df.loc[df.index[0], 'economic_regime'] = 1  # Start with expansion
+            df['economic_regime'] = df['economic_regime'].ffill()
+
+            data_dict[ticker] = df
+
+        return data_dict

@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
+
 from .metrics import calculate_metrics
 from data import DataSplitter
+from backtesting import Backtester, BacktestConfig
 
 
 class ModelEvaluator:
@@ -35,69 +37,40 @@ class ModelEvaluator:
 
         return metrics
 
-    def evaluate_models_two_tier(self, data_config, models_dict, data):
-        """Two-tier evaluation: full vs common dates"""
-
+    def evaluate_all_models(self, data_config, models_dict, data_dict):
+        """Evaluate all models on same test data"""
         splitter = DataSplitter(data_config)
         split_dates = splitter.get_split_dates()
 
         results = {}
 
-        # Tier 1: Each model on its maximum test set
-        print("Tier 1: Individual model evaluation (maximum test sets)")
+        # Get test data with history for sequence models
+        test_data_with_history = {}
+        for ticker, df in data_dict.items():
+            # Include 30 days before test period for windowing
+            expanded_start = (pd.to_datetime(split_dates['test_start']) - pd.Timedelta(days=30)).strftime('%Y-%m-%d')
+            expanded_df = splitter.filter_data_by_dates(df, expanded_start, split_dates['test_end'])
+            test_data_with_history[ticker] = expanded_df
+
+        print("Model evaluation (all models use same test period):")
+
         for model_name, model_info in models_dict.items():
             model = model_info['model']
 
-            # Get model's available dates in test period
-            available_dates = model.get_available_dates(data, split_dates['test_start'], split_dates['test_end'])
+            # Prepare test data
+            X_test, y_test = model.prepare_data(test_data_with_history)
 
-            if len(available_dates) == 0:
-                print(f"  {model_name}: No available test dates")
-                results[model_name] = {'tier1': None, 'tier2': None}
+            if len(X_test) == 0:
+                print(f"  {model_name}: No test data available")
+                results[model_name] = None
                 continue
 
-            # Prepare data for available dates only
-            test_data_subset = data[data.index.isin(available_dates)]
-            X, y = model.prepare_data(test_data_subset)
-
             # Evaluate
-            metrics = self.evaluate_model(model, X, y, test_data_subset)
-            results[model_name] = {'tier1': metrics, 'available_dates': len(available_dates)}
+            metrics = self.evaluate_model(model, X_test, y_test)
+            results[model_name] = metrics
 
-            print(f"  {model_name}: {len(available_dates)} test dates, "
-                  f"key_metric: {metrics.get('directional_accuracy', metrics.get('accuracy', 'N/A')):.4f}")
-
-        # Tier 2: All models on common dates only
-        print("\nTier 2: Fair comparison (common test dates only)")
-
-        # Find common dates
-        all_available_dates = []
-        for model_name, model_info in models_dict.items():
-            model = model_info['model']
-            available_dates = model.get_available_dates(data, split_dates['test_start'], split_dates['test_end'])
-            all_available_dates.append(set(available_dates))
-
-        if all_available_dates:
-            common_dates = set.intersection(*all_available_dates)
-            common_dates = pd.DatetimeIndex(sorted(common_dates))
-
-            print(f"Common test dates: {len(common_dates)}")
-
-            if len(common_dates) > 0:
-                for model_name, model_info in models_dict.items():
-                    model = model_info['model']
-
-                    # Prepare data for common dates only
-                    common_test_data = data[data.index.isin(common_dates)]
-                    X, y = model.prepare_data(common_test_data)
-
-                    # Evaluate
-                    metrics = self.evaluate_model(model, X, y, common_test_data)
-                    results[model_name]['tier2'] = metrics
-
-                    print(f"  {model_name}: key_metric: {metrics.get('directional_accuracy', metrics.get('accuracy', 'N/A')):.4f}")
-            else:
-                print("No common dates found across all models")
+            key_metric = metrics.get('directional_accuracy', metrics.get('accuracy', 'N/A'))
+            print(f"  {model_name}: {len(X_test)} test samples, key_metric: {key_metric:.4f}")
 
         return results
 
@@ -140,5 +113,40 @@ class ModelEvaluator:
                                                          sector_metrics.get('accuracy', 0))
                     }
             results['sectors'] = sectors
+
+        return results
+
+    def backtest_model(self, model, test_data: pd.DataFrame, strategy=None):
+        """Run backtest for a model"""
+
+        # Detect model type from target config
+        model_type = model.target_config['type']
+
+        # Prepare predictions
+        X_test, y_test = model.prepare_data(test_data)
+        predictions = model.predict(X_test)
+
+        # Create prediction DataFrame
+        pred_df = pd.DataFrame({
+            'date': test_data.index[:len(predictions)],
+            'ticker': test_data['ticker'].iloc[:len(predictions)],
+            'predicted_return': predictions
+        })
+
+        # Get actual returns
+        actual_df = pd.DataFrame({
+            'date': test_data.index[:len(predictions)],
+            'ticker': test_data['ticker'].iloc[:len(predictions)],
+            'actual_return': y_test
+        })
+
+        print("Predictions:")
+        print(pred_df.head())
+        print(actual_df.head())
+
+        # Run backtest with appropriate model type
+        config = BacktestConfig()
+        backtester = Backtester(config)
+        results = backtester.run_backtest(pred_df, actual_df, model_type=model_type, strategy=strategy)
 
         return results

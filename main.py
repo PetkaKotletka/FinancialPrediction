@@ -1,4 +1,5 @@
 import sys
+import traceback
 from pathlib import Path
 from collections import defaultdict
 import pandas as pd
@@ -60,6 +61,7 @@ class StockPredictionCLI:
         print("  models     - Show model status")
         print("  train      - Train a model on a specific target (e.g., 'train xgboost return_1d' or 'train linear')")
         print("  evaluate   - Evaluate models (e.g., 'evaluate' or 'evaluate lstm xgboost')")
+        print("  backtest   - Backtest a model (e.g., 'backtest lstm')")
         print("  plot       - Generate plots (e.g., 'plot scatter' for all models or 'plot scatter xgboost')")
         print("  help       - Show this help message")
         print("  exit (q)   - Exit program")
@@ -71,46 +73,49 @@ class StockPredictionCLI:
 
     def _load_data(self):
         """Load preprocessed data or create it if doesn't exist"""
-        processed_path = Path(self.config['paths']['processed_dir']) / 'processed_data.csv'
+        processed_path = Path(self.config['paths']['processed_dir'])
 
-        if processed_path.exists():
+        # Check if individual ticker files exist
+        ticker_files_exist = all(
+            (processed_path / f'{ticker}_processed.csv').exists()
+            for ticker in self.config['data']['tickers']
+        )
+
+        if ticker_files_exist:
             print("Loading preprocessed data...")
-            self.data = pd.read_csv(processed_path, index_col=0, parse_dates=True)
-            print(f"Data loaded: {len(self.data)} rows")
+            self.data = {}
+            for ticker in self.config['data']['tickers']:
+                ticker_path = processed_path / f'{ticker}_processed.csv'
+                self.data[ticker] = pd.read_csv(ticker_path, index_col=0, parse_dates=True)
+            print(f"Data loaded: {len(self.data)} tickers")
         else:
             print("No preprocessed data found. Preprocessing...")
 
             # Initialize components
-            downloader = DataDownloader(self.config)
+            downloader = DataDownloader(self.config['data'])
             preprocessor = DataPreprocessor(self.config)
-            feature_engineer = FeatureEngineer(self.config)
+            feature_engineer = FeatureEngineer(self.config['data'])
 
             # Download data
-            stock_data = downloader.download_stock_data(
-                self.config['data']['tickers'],
-                self.config['data']['start_date'],
-                self.config['data']['end_date']
-            )
-            fred_data = downloader.download_fred_data(
-                self.config['data']['fred_indicators'],
-                self.config['data']['start_date'],
-                self.config['data']['end_date']
-            )
+            stock_data = downloader.download_stock_data()
+            fred_data = downloader.download_fred_data()
 
             # Preprocess
-            df = preprocessor.clean_data(stock_data, fred_data)
-            df = preprocessor.create_targets(df)
-            df = preprocessor.create_regime_features(df)
+            data_dict = preprocessor.clean_data(stock_data, fred_data)
+            data_dict = preprocessor.create_targets(data_dict)
+            data_dict = preprocessor.create_regime_features(data_dict)
 
             # Feature engineering
-            df = feature_engineer.create_technical_features(df)
-            df = feature_engineer.create_sector_features(df)
+            data_dict = feature_engineer.create_technical_features(data_dict)
+            data_dict = feature_engineer.create_sector_features(data_dict)
 
-            # Save
-            processed_path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(processed_path)
-            self.data = df
-            print("Data preprocessed and saved.")
+            # Save each ticker separately
+            processed_path.mkdir(parents=True, exist_ok=True)
+            for ticker, df in data_dict.items():
+                df.to_csv(processed_path / f'{ticker}_processed.csv')
+
+            self.data = data_dict
+            print("Data preprocessed and saved per ticker.")
 
     def _load_models(self):
         """Load saved trained models"""
@@ -199,18 +204,39 @@ class StockPredictionCLI:
 
             model = self._init_model(model_class_name, model_name, target_name)
 
-            # Use date-based preparation
+            # Get split dates
             from data.data_splitter import DataSplitter
             splitter = DataSplitter(self.config['data'])
             split_dates = splitter.get_split_dates()
 
-            # Prepare training data (train + val periods)
-            train_data = splitter.filter_data_by_dates(self.data, split_dates['train_start'], split_dates['train_end'])
-            val_data = splitter.filter_data_by_dates(self.data, split_dates['val_start'], split_dates['val_end'])
+            # Prepare training data with history for windowing
+            train_data_dict = {}
+            val_data_dict = {}
+
+            for ticker, df in self.data.items():
+                # For sequence models, add history before training period
+                if model.get_model_type() in ['sequence', 'cnn']:
+                    # Add 30 days before training start for windowing
+                    window_buffer = 30
+                    expanded_train_start = (pd.to_datetime(split_dates['train_start']) -
+                                          pd.Timedelta(days=window_buffer)).strftime('%Y-%m-%d')
+                    expanded_val_start = (pd.to_datetime(split_dates['val_start']) -
+                                        pd.Timedelta(days=window_buffer)).strftime('%Y-%m-%d')
+
+                    train_data_dict[ticker] = splitter.filter_data_by_dates(
+                        df, expanded_train_start, split_dates['train_end'])
+                    val_data_dict[ticker] = splitter.filter_data_by_dates(
+                        df, expanded_val_start, split_dates['val_end'])
+                else:
+                    # Tabular and ARIMA models use exact periods
+                    train_data_dict[ticker] = splitter.filter_data_by_dates(
+                        df, split_dates['train_start'], split_dates['train_end'])
+                    val_data_dict[ticker] = splitter.filter_data_by_dates(
+                        df, split_dates['val_start'], split_dates['val_end'])
 
             # Prepare data for training
-            X_train, y_train = model.prepare_data(train_data)
-            X_val, y_val = model.prepare_data(val_data)
+            X_train, y_train = model.prepare_data(train_data_dict)
+            X_val, y_val = model.prepare_data(val_data_dict)
 
             # Build model
             model.build_model()
@@ -224,7 +250,7 @@ class StockPredictionCLI:
             print(f"Model '{model_name}' trained and saved.")
 
     def cmd_evaluate(self, model_names=None):
-        """Evaluate trained models with two-tier analysis"""
+        """Evaluate trained models"""
         # If no specific models requested, evaluate all trained models
         if not model_names:
             models_to_evaluate = self.trained_models
@@ -240,11 +266,11 @@ class StockPredictionCLI:
             print("No models to evaluate.")
             return
 
-        print(f"\nEvaluating {len(models_to_evaluate)} models with two-tier analysis...")
+        print(f"\nEvaluating {len(models_to_evaluate)} models...")
         print("-" * 50)
 
-        # Use new two-tier evaluation
-        results = self.evaluator.evaluate_models_two_tier(self.config['data'], models_to_evaluate, self.data)
+        # Use simplified evaluation
+        results = self.evaluator.evaluate_all_models(self.config['data'], models_to_evaluate, self.data)
 
         # Display summary
         print(f"\n{'='*50}")
@@ -252,23 +278,59 @@ class StockPredictionCLI:
         print(f"{'='*50}")
 
         for model_name, result in results.items():
-            print(f"\n{model_name}:")
-
-            if result['tier1']:
-                tier1 = result['tier1']
-                print(f"  Tier 1 ({result['available_dates']} dates): ", end="")
-                if 'directional_accuracy' in tier1:
-                    print(f"RMSE={tier1['rmse']:.4f}, Dir.Acc={tier1['directional_accuracy']:.4f}")
+            if result:
+                print(f"\n{model_name}:")
+                if 'directional_accuracy' in result:
+                    print(f"  RMSE: {result['rmse']:.4f}")
+                    print(f"  Directional Accuracy: {result['directional_accuracy']:.4f}")
+                    if 'sharpe_ratio' in result:
+                        print(f"  Sharpe Ratio: {result['sharpe_ratio']:.4f}")
                 else:
-                    print(f"Accuracy={tier1['accuracy']:.4f}")
+                    print(f"  Accuracy: {result['accuracy']:.4f}")
+                    print(f"  F1 Score: {result['f1_score']:.4f}")
+            else:
+                print(f"\n{model_name}: No results")
 
-            if result['tier2']:
-                tier2 = result['tier2']
-                print(f"  Tier 2 (common dates): ", end="")
-                if 'directional_accuracy' in tier2:
-                    print(f"RMSE={tier2['rmse']:.4f}, Dir.Acc={tier2['directional_accuracy']:.4f}")
-                else:
-                    print(f"Accuracy={tier2['accuracy']:.4f}")
+    def cmd_backtest(self, model_class_name, target_name='return_1d'):
+        """Run backtest for a model"""
+        model_name = f'{model_class_name}_{target_name}'
+
+        if model_name not in self.trained_models:
+            print(f"Error: Model '{model_class_name}' not trained for {target_name}")
+            return
+
+        # Validate target type for backtesting
+        if target_name not in ['return_1d', 'direction_1d']:
+            print(f"Error: Backtesting only supports return_1d and direction_1d targets")
+            return
+
+        print(f"\nRunning backtest for {model_class_name} ({target_name})...")
+        model = self.trained_models[model_name]['model']
+
+        # Get test data
+        splitter = DataSplitter(self.config['data'])
+        split_dates = splitter.get_split_dates()
+        test_data = splitter.filter_data_by_dates(
+            self.data,
+            split_dates['test_start'],
+            split_dates['test_end']
+        )
+
+        # Run backtest
+        results = self.evaluator.backtest_model(model, test_data)
+
+        # Display results
+        metrics = results['metrics']
+        print(f"\nBacktest Results:")
+        print(f"  Total Return: {metrics['total_return']:.2%}")
+        print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+        print(f"  Max Drawdown: {metrics['max_drawdown']:.2%}")
+        print(f"  Win Rate: {metrics['win_rate']:.2%}")
+        print(f"  Number of Trades: {metrics['n_trades']}")
+
+        # Generate plot
+        plot_path = self.plotter.plot_backtest_results(results, model_class_name, 'threshold')
+        print(f"\nSaved backtest plot to: {plot_path}")
 
     def cmd_plot(self, plot_type, model_class_name=None):
         """Generate plots for a model or all models"""
@@ -329,6 +391,11 @@ class StockPredictionCLI:
             'models': lambda args: self.cmd_models(),
             'train': lambda args: self.cmd_train(args[0], args[1]) if len(args) > 1 else self.cmd_train(args[0]),
             'evaluate': lambda args: self.cmd_evaluate(args) if len(args) > 0 else self.cmd_evaluate(),
+            'backtest': lambda args: (
+                self.cmd_backtest(args[0], args[1]) if len(args) > 1
+                else self.cmd_backtest(args[0]) if len(args) == 1
+                else print("Usage: backtest <model> [target]")
+            ),
             'help': lambda args: self.print_commands(),
             'plot': lambda args: (
                 self.cmd_plot(args[0], args[1]) if len(args) > 1
@@ -359,6 +426,7 @@ class StockPredictionCLI:
                 break
             except Exception as e:
                 print(f"Error: {e}")
+                traceback.print_exc()
 
 
 def main():

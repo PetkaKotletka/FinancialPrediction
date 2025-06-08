@@ -6,17 +6,24 @@ import requests
 
 
 class DataDownloader:
-    def __init__(self, config: dict):
-        self.config = config
+    def __init__(self, data_config: dict):
+        self.config = data_config
         self.data_dir = Path(config['paths']['data_dir'])
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    def download_stock_data(self, tickers: List[str], start: str, end: str) -> Dict[str, pd.DataFrame]:
+    def download_stock_data() -> Dict[str, pd.DataFrame]:
         """Download stock data from yfinance"""
         stock_data = {}
+        tickers = self.config['tickers'].keys()
 
         print(f"Downloading {', '.join(tickers)}...")
-        data_raw = yf.download(tickers, start=start, end=end, group_by='ticker', auto_adjust=False)
+        data_raw = yf.download(
+            tickers,
+            start=self.config['start_date'],
+            end=self.config['end_date'],
+            group_by='ticker',
+            auto_adjust=False
+        )
 
         for ticker in tickers:
             df = data_raw[ticker].copy()
@@ -28,7 +35,7 @@ class DataDownloader:
 
         return stock_data
 
-    def download_fred_data(self, indicators: List[str], start: str, end: str) -> pd.DataFrame:
+    def download_fred_data() -> pd.DataFrame:
         """Download economic indicators from FRED"""
         # For now, it's a local csv file
         fred_path = self.data_dir / 'FRED.csv'
@@ -39,15 +46,7 @@ class DataDownloader:
 
     def _get_sector(self, ticker: str) -> str:
         """Map ticker to sector"""
-        sector_map = {
-            'AAPL': 'Technology',
-            'MSFT': 'Technology',
-            'AMZN': 'E-commerce',
-            'TSLA': 'Automotive',
-            '^GSPC': 'Index',
-            '^DJI': 'Index',
-            '^IXIC': 'Index'
-        }
+        sector_map = self.config['tickers']
         if ticker not in sector_map.keys():
-            print(f'Warning: Ticker {ticker} not found in sector map')
+            print(f'Warning: Ticker {ticker} not found in config')
         return sector_map.get(ticker, 'Unknown')
