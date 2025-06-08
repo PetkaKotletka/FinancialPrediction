@@ -126,28 +126,22 @@ class CNNModel(BaseModel):
         n_features = len(self.feature_columns)
 
         model = keras.Sequential([
-            # Reshape for CNN: add channel dimension
-            layers.Reshape((self.window_size, n_features, 1)),
+            # Use Conv1D for time series
+            layers.Conv1D(32, kernel_size=3, activation='relu', padding='same'),
+            layers.MaxPooling1D(pool_size=2),
 
-            # First conv block
-            layers.Conv2D(32, (5, 1), activation='relu', padding='same'),
-            layers.MaxPooling2D((2, 1)),
+            # Single convolutional block
+            layers.Conv1D(16, kernel_size=3, activation='relu', padding='same'),
+            layers.GlobalAveragePooling1D(),  # Better than Flatten for time series
 
-            # Second conv block
-            layers.Conv2D(64, (3, 1), activation='relu', padding='same'),
-            layers.MaxPooling2D((2, 1)),
-
-            # Flatten and dense layers
-            layers.Flatten(),
-            layers.Dense(128, activation='relu'),
-            layers.Dropout(0.5),
-            layers.Dense(64, activation='relu'),
-            layers.Dropout(0.3),
+            # Single dense layer
+            layers.Dense(32, activation='relu'),
+            layers.Dropout(0.1),
         ])
 
         # Output layer based on task type
         if self.target_config['type'] == 'regression':
-            model.add(layers.Dense(1))
+            model.add(layers.Dense(1, kernel_initializer='normal'))
             loss = 'mse'
             metrics = ['mae']
         else:  # classification
@@ -156,7 +150,7 @@ class CNNModel(BaseModel):
             metrics = ['accuracy']
 
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            optimizer=keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
             loss=loss,
             metrics=metrics
         )
@@ -183,13 +177,22 @@ class CNNModel(BaseModel):
             restore_best_weights=True
         )
 
+        # Learning rate reduction
+        lr_reducer = keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+            verbose=0
+        )
+
         # Train
         history = self.model.fit(
             X_train_scaled, y_train,
             validation_data=(X_val_scaled, y_val),
             epochs=self.epochs,
             batch_size=self.batch_size,
-            callbacks=[early_stop],
+            callbacks=[early_stop, lr_reducer],
             verbose=0
         )
 

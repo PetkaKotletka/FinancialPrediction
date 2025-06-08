@@ -31,6 +31,7 @@ class StockPredictionCLI:
         # Plot types and methods of ModelPlotter
         self.plot_methods = {
             'scatter': 'scatter',
+            'line': 'line_chart'
         }
 
         self.trained_models = {}
@@ -59,7 +60,7 @@ class StockPredictionCLI:
         print("  models     - Show model status")
         print("  train      - Train a model on a specific target (e.g., 'train xgboost return_1d' or 'train linear')")
         print("  evaluate   - Evaluate models (e.g., 'evaluate' or 'evaluate lstm xgboost')")
-        print("  plot       - Generate price prediction plots (e.g., 'plot scatter xgboost')")
+        print("  plot       - Generate plots (e.g., 'plot scatter' for all models or 'plot scatter xgboost')")
         print("  help       - Show this help message")
         print("  exit (q)   - Exit program")
         print("-" * 50)
@@ -269,16 +270,44 @@ class StockPredictionCLI:
                 else:
                     print(f"Accuracy={tier2['accuracy']:.4f}")
 
-    def cmd_plot(self, plot_type, model_class_name):
-        """Generate plots for a model"""
-        # Mapping of plot types to plotter methods
+    def cmd_plot(self, plot_type, model_class_name=None):
+        """Generate plots for a model or all models"""
 
         if plot_type not in self.plot_methods:
             print(f"Error: Unknown plot type '{plot_type}'")
             print(f"Available plot types: {', '.join(self.plot_methods.keys())}")
             return
 
-        # Check if model exists for return_1d
+        # If no model specified, plot for all available models
+        if model_class_name is None:
+            available_models = []
+            for model_name, model_info in self.trained_models.items():
+                if model_name.endswith('_return_1d'):
+                    model_class = model_info['class']
+                    available_models.append(model_class)
+
+            if not available_models:
+                print("Error: No models trained for return_1d target")
+                return
+
+            print(f"\nGenerating {plot_type} plots for all available models: {', '.join(available_models)}")
+
+            all_results = []
+            for model_class in available_models:
+                model_name = f'{model_class}_return_1d'
+                model = self.trained_models[model_name]['model']
+
+                print(f"  Plotting {model_class}...")
+                plotter_method = getattr(self.plotter, self.plot_methods[plot_type])
+                results = plotter_method(model)
+                all_results.extend(results)
+
+            print(f"\nSaved {len(all_results)} plots:")
+            for result in all_results:
+                print(f"  {result}")
+            return
+
+        # Single model case (existing logic)
         model_name = f'{model_class_name}_return_1d'
         if model_name not in self.trained_models:
             print(f"Error: Model '{model_class_name}' not trained for return_1d")
@@ -287,7 +316,6 @@ class StockPredictionCLI:
         print(f"\nGenerating {plot_type} plots for {model_class_name}...")
         model = self.trained_models[model_name]['model']
 
-        # Call the appropriate plotter method
         plotter_method = getattr(self.plotter, self.plot_methods[plot_type])
         results = plotter_method(model)
 
@@ -302,7 +330,11 @@ class StockPredictionCLI:
             'train': lambda args: self.cmd_train(args[0], args[1]) if len(args) > 1 else self.cmd_train(args[0]),
             'evaluate': lambda args: self.cmd_evaluate(args) if len(args) > 0 else self.cmd_evaluate(),
             'help': lambda args: self.print_commands(),
-            'plot': lambda args: self.cmd_plot(args[0], args[1]) if len(args) > 1 else print("Usage: plot <type> <model>"),
+            'plot': lambda args: (
+                self.cmd_plot(args[0], args[1]) if len(args) > 1
+                else self.cmd_plot(args[0]) if len(args) == 1
+                else print("Usage: plot <type> [model]")
+            ),
             'exit': lambda args: sys.exit(0),
             'q': lambda args: sys.exit(0)
         }

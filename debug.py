@@ -1,4 +1,3 @@
-# debug.py
 import sys
 import pandas as pd
 import numpy as np
@@ -7,6 +6,7 @@ from pathlib import Path
 from config import CONFIG
 from data import DataDownloader, DataPreprocessor, FeatureEngineer
 from models import ARIMAModel, LSTMModel, GRUModel, CNNModel
+from main import StockPredictionCLI
 from utils import ModelIO
 
 def load_data():
@@ -93,6 +93,49 @@ def debug_model_predictions(model_name, target_name='return_1d'):
     print(f"  Mean: {np.mean(y_test):.6f}")
     print(f"  Std: {np.std(y_test):.6f}")
 
+def debug_lstm_model():
+    """Detailed LSTM debugging"""
+
+    cli = StockPredictionCLI()
+    cli._load_data()
+    cli._load_models()
+
+    # Get LSTM model
+    model_name = 'lstm_return_1d'
+    if model_name not in cli.trained_models:
+        print(f"Model {model_name} not found!")
+        return
+
+    model = cli.trained_models[model_name]['model']
+
+    # Check model weights
+    for layer in model.model.layers:
+        if hasattr(layer, 'get_weights'):
+            weights = layer.get_weights()
+            if weights:
+                print(f"{layer.name} - Weight stats:")
+                for i, w in enumerate(weights):
+                    print(f"  Weight {i}: mean={np.mean(w):.6f}, std={np.std(w):.6f}")
+
+    # Test on single ticker
+    test_data = cli.data[cli.data['ticker'] == 'AAPL'].iloc[-100:]
+    X, y = model.prepare_data(test_data)
+
+    if len(X) > 0:
+        # Check raw vs scaled data
+        X_sample = X[:5]
+        n_samples, n_timesteps, n_features = X_sample.shape
+        X_reshaped = X_sample.reshape(-1, n_features)
+        X_scaled = model.scaler.transform(X_reshaped)
+
+        print(f"\nRaw data sample: {X_reshaped[0, :5]}")
+        print(f"Scaled data sample: {X_scaled[0, :5]}")
+
+        # Get predictions
+        predictions = model.predict(X_sample)
+        print(f"\nSample predictions: {predictions}")
+        print(f"Sample actuals: {y[:5]}")
+
 def main():
     """Debug problematic models"""
     problematic_models = ['arima', 'lstm', 'gru', 'cnn']
@@ -105,4 +148,4 @@ def main():
     print(f"{'='*50}")
 
 if __name__ == "__main__":
-    main()
+    debug_lstm_model()

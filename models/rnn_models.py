@@ -56,6 +56,11 @@ class LSTMModel(BaseModel):
         X = np.array(sequences)  # Shape: (samples, timesteps, features)
         y = np.array(targets)
 
+        # print(f"LSTM prepare_data for {self.model_name}:")
+        # print(f"  Total sequences created: {len(sequences)}")
+        # print(f"  Sequence shape: {X.shape if len(sequences) > 0 else 'No sequences'}")
+        # print(f"  Target stats - mean: {np.mean(y):.6f}, std: {np.std(y):.6f}")
+
         return X, y
 
     def prepare_data_for_dates(self, df: pd.DataFrame, start_date: str, end_date: str) -> tuple:
@@ -141,13 +146,12 @@ class LSTMModel(BaseModel):
                 dropout=self.dropout_rate
             ))
 
-        # Dense layers
-        model.add(layers.Dense(32, activation='relu'))
-        model.add(layers.Dropout(self.dropout_rate))
+        # Dense layer
+        model.add(layers.Dense(16, activation='relu'))
 
         # Output layer based on task type
         if self.target_config['type'] == 'regression':
-            model.add(layers.Dense(1))
+            model.add(layers.Dense(1, kernel_initializer='normal'))
             loss = 'mse'
             metrics = ['mae']
         else:  # classification
@@ -156,7 +160,7 @@ class LSTMModel(BaseModel):
             metrics = ['accuracy']
 
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            optimizer=keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
             loss=loss,
             metrics=metrics
         )
@@ -183,13 +187,22 @@ class LSTMModel(BaseModel):
             restore_best_weights=True
         )
 
+        # Learning rate reduction
+        lr_reducer = keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+            verbose=0
+        )
+
         # Train
         history = self.model.fit(
             X_train_scaled, y_train,
             validation_data=(X_val_scaled, y_val),
             epochs=self.epochs,
             batch_size=self.batch_size,
-            callbacks=[early_stop],
+            callbacks=[early_stop, lr_reducer],
             verbose=0
         )
 
@@ -210,6 +223,10 @@ class LSTMModel(BaseModel):
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Make predictions with scaling"""
+        # print(f"LSTM predict - Input shape: {X.shape}")
+        # print(f"Scaler mean: {self.scaler.mean_[:5]}...")  # First 5 features
+        # print(f"Scaler scale: {self.scaler.scale_[:5]}...")
+
         # Scale features
         n_samples, n_timesteps, n_features = X.shape
         X_reshaped = X.reshape(-1, n_features)
@@ -221,6 +238,8 @@ class LSTMModel(BaseModel):
         # Convert probabilities to binary predictions for classification
         if self.target_config['type'] == 'classification':
             predictions = (predictions > 0.5).astype(int)
+
+        # print(f"Predictions - min: {predictions.min():.6f}, max: {predictions.max():.6f}")
 
         return predictions.flatten()
 
@@ -257,13 +276,12 @@ class GRUModel(LSTMModel):
                 dropout=self.dropout_rate
             ))
 
-        # Dense layers
-        model.add(layers.Dense(32, activation='relu'))
-        model.add(layers.Dropout(self.dropout_rate))
+        # Dense layer
+        model.add(layers.Dense(16, activation='relu'))
 
         # Output layer based on task type
         if self.target_config['type'] == 'regression':
-            model.add(layers.Dense(1))
+            model.add(layers.Dense(1, kernel_initializer='normal'))
             loss = 'mse'
             metrics = ['mae']
         else:  # classification
@@ -272,7 +290,7 @@ class GRUModel(LSTMModel):
             metrics = ['accuracy']
 
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            optimizer=keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
             loss=loss,
             metrics=metrics
         )
