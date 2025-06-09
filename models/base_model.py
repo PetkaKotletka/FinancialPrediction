@@ -1,82 +1,235 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
+import tensorflow as tf
 import re
-from typing import Dict, Tuple, Any
-
-from data import FeatureEngineer, DataSplitter
+from typing import Dict, List, Tuple, Any
 
 
 class BaseModel(ABC):
     is_implemented = False
 
-    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
+    def __init__(self, model_name: str, config: dict, target_config: dict):
         self.model_name = model_name
         self.model_class_name = re.match(r'^([^_]+)', model_name).group(1)
-        self.data_config = data_config
-        self.models_config = models_config
+        self.data_config = config['data']
+        self.models_config = config['models']
         self.target_config = target_config
-        self.model = None
         self.target_column = target_config['name']
-        self.all_sectors = list(set(data_config['tickers'].values()))
-        self.feature_columns = FeatureEngineer.get_feature_columns(
-            self.get_model_type(),
-            self.all_sectors
-        )
-        self.data_splitter = DataSplitter(data_config)
+        self.all_sectors = list(set(self.data_config['tickers'].values()))
+        # Calculated in prepare data
+        self.categorical_vocab_sizes = None
+        self.numerical_features = None
+        self.categorical_features = None
+        # Calculated in build model
+        self.model = None
+
 
     def get_model_type(self):
         """Get model type (tabular, sequence, cnn, arima)"""
         return 'tabular'
 
-    def prepare_data(self, data_dict: Dict[str, pd.DataFrame]) -> Tuple[np.ndarray, np.ndarray]:
-        """Universal data preparation - all models get same date coverage"""
+    def prepare_data(self, data_dict: Dict[str, pd.DataFrame]):
+        """Process and store data in model-specific format with consistent test dates"""
+
+        # Get split dates from config
+        train_start = pd.to_datetime(self.data_config['train_start'])
+        train_end = pd.to_datetime(self.data_config['train_end'])
+        val_start = pd.to_datetime(self.data_config['val_start'])
+        val_end = pd.to_datetime(self.data_config['val_end'])
+        test_start = pd.to_datetime(self.data_config['test_start'])
+        test_end = pd.to_datetime(self.data_config['test_end'])
+
         if self.get_model_type() == 'arima':
-            # ARIMA: store per-ticker data
+            # ARIMA: store per-ticker price series
             self.ticker_data = {}
             for ticker, df in data_dict.items():
-                clean_data = df[['Close', self.target_column]].dropna()
+                # Filter by date periods
+                train_data = df[train_start:train_end]
+                test_data = df[test_start:test_end]
+
                 self.ticker_data[ticker] = {
-                    'prices': clean_data['Close'].values,
-                    'returns': clean_data[self.target_column].values
+                    'train_prices': train_data['Adj Close'].values,
+                    'test_prices': test_data['Adj Close'].values,
+                    'train_targets': train_data[self.target_column].values,
+                    'test_targets': test_data[self.target_column].values,
+                    'test_dates': test_data.index
                 }
-            # Return dummy data for interface compatibility
-            return np.array([]), np.array([])
-
-        elif self.get_model_type() in ['sequence', 'cnn']:
-            # Sequence models: create windows per ticker
-            sequences, targets = [], []
-            for ticker, df in data_dict.items():
-                clean_data = df[self.feature_columns + [self.target_column]].dropna()
-                if len(clean_data) >= self.window_size:
-                    # Create sequences - targets cover ALL available dates
-                    for i in range(self.window_size, len(clean_data)):
-                        seq = clean_data.iloc[i-self.window_size:i][self.feature_columns].values
-                        target = clean_data.iloc[i][self.target_column]
-                        sequences.append(seq)
-                        targets.append(target)
-            return np.array(sequences), np.array(targets)
-
         else:
-            # Tabular models: concatenate with sector encoding
-            all_X, all_y = [], []
+            # Auto-select features
+            sample_df = next(iter(data_dict.values()))
+            exclude_cols = ['ticker', 'return_1d', 'direction_1d', 'return_5d']
+            available_cols = [col for col in sample_df.columns if col not in exclude_cols]
+
+            numerical_cols = [col for col in available_cols if sample_df[col].dtype != 'object']
+            categorical_cols = [col for col in available_cols if sample_df[col].dtype == 'object'] # sector, volatility_regime
+
+            # Process based on model type
+            if self.get_model_type() in ['sequence', 'cnn']:
+                self._prepare_sequence_data(data_dict, numerical_cols, categorical_cols)
+            else:
+                self._prepare_tabular_data(data_dict, numerical_cols, categorical_cols)
+
+    def _prepare_tabular_data(self, data_dict, numerical_cols, categorical_cols):
+        """Prepare tabular data with one-hot encoding"""
+
+        # Get split dates from config
+        train_start = pd.to_datetime(self.data_config['train_start'])
+        train_end = pd.to_datetime(self.data_config['train_end'])
+        val_start = pd.to_datetime(self.data_config['val_start'])
+        val_end = pd.to_datetime(self.data_config['val_end'])
+        test_start = pd.to_datetime(self.data_config['test_start'])
+        test_end = pd.to_datetime(self.data_config['test_end'])
+
+        # Collect all unique values for each categorical column
+        categorical_mappings = {}
+        for cat_col in categorical_cols:
+            unique_values = set()
             for ticker, df in data_dict.items():
-                df_copy = df.copy()
-                df_copy['sector'] = self.data_config['tickers'].get(ticker, 'Unknown')
+                unique_values.update(df[cat_col].dropna().unique())
+            categorical_mappings[cat_col] = sorted(list(unique_values))
 
-                # Create all sector columns for this ticker
-                for sector in self.all_sectors:
-                    df_copy[f'sector_{sector}'] = 1 if df_copy['sector'].iloc[0] == sector else 0
+        all_train_X, all_train_y = [], []
+        all_val_X, all_val_y = [], []
+        all_test_X, all_test_y = [], []
+        test_dates = []
 
-                feature_data = df_copy[self.feature_columns]
-                clean_data = pd.concat([feature_data, df_copy[[self.target_column]]], axis=1).dropna()
+        for ticker, df in data_dict.items():
+            df_work = df.copy()
 
-                if len(clean_data) > 0:
-                    all_X.append(clean_data.iloc[:, :-1].values)
-                    all_y.append(clean_data[self.target_column].values)
+            # One-hot encode all categorical columns systematically
+            for cat_col in categorical_cols:
+                # Create dummy columns for all possible values
+                for value in categorical_mappings[cat_col]:
+                    df_work[f'{cat_col}_{value}'] = (df_work[cat_col] == value).astype(int)
 
-            return np.vstack(all_X) if all_X else np.empty((0, len(self.feature_columns))), \
-                   np.concatenate(all_y) if all_y else np.empty((0,))
+            # Final features: numerical + all encoded categoricals
+            encoded_cols = [f'{cat}_{val}' for cat in categorical_cols for val in categorical_mappings[cat]]
+            final_features = numerical_cols + encoded_cols
+
+            # Split by dates
+            train_data = df_work[train_start:train_end][final_features + [self.target_column]]
+            val_data = df_work[val_start:val_end][final_features + [self.target_column]]
+            test_data = df_work[test_start:test_end][final_features + [self.target_column]]
+
+            all_train_X.append(train_data[final_features].values)
+            all_train_y.append(train_data[self.target_column].values)
+
+            all_val_X.append(val_data[final_features].values)
+            all_val_y.append(val_data[self.target_column].values)
+
+            all_test_X.append(test_data[final_features].values)
+            all_test_y.append(test_data[self.target_column].values)
+            test_dates.extend(test_data.index.tolist())
+
+        # Store processed data
+        self.X_train = np.vstack(all_train_X)
+        self.y_train = np.concatenate(all_train_y)
+        self.X_val = np.vstack(all_val_X)
+        self.y_val = np.concatenate(all_val_y)
+        self.X_test = np.vstack(all_test_X)
+        self.y_test = np.concatenate(all_test_y)
+        self.test_dates = pd.DatetimeIndex(test_dates)
+
+    def _prepare_sequence_data(self, data_dict, numerical_cols, categorical_cols):
+        """Prepare sequence data with label encoding for categorical features"""
+
+        # Get split dates from config
+        train_start = pd.to_datetime(self.data_config['train_start'])
+        train_end = pd.to_datetime(self.data_config['train_end'])
+        val_start = pd.to_datetime(self.data_config['val_start'])
+        val_end = pd.to_datetime(self.data_config['val_end'])
+        test_start = pd.to_datetime(self.data_config['test_start'])
+        test_end = pd.to_datetime(self.data_config['test_end'])
+
+        # Create label encodings for all categorical features
+        categorical_mappings = {}
+
+        for cat_col in categorical_cols:
+            unique_values = set()
+            for ticker, df in data_dict.items():
+                unique_values.update(df[cat_col].dropna().unique())
+
+            # Create label mapping (0-indexed for embeddings)
+            sorted_values = sorted(list(unique_values))
+            categorical_mappings[cat_col] = {val: idx for idx, val in enumerate(sorted_values)}
+
+        # Store vocab sizes for use in model building
+        self.categorical_vocab_sizes = {col: len(mapping) for col, mapping in categorical_mappings.items()}
+
+        train_sequences, train_targets = [], []
+        val_sequences, val_targets = [], []
+        test_sequences, test_targets = [], []
+        test_dates = []
+
+        for ticker, df in data_dict.items():
+            df_work = df.copy()
+
+            # Label encode all categorical features
+            for cat_col in categorical_cols:
+                df_work[f'{cat_col}_encoded'] = df_work[cat_col].map(categorical_mappings[cat_col])
+
+            # Final features: numerical + encoded categoricals
+            encoded_categorical_cols = [f'{cat}_encoded' for cat in categorical_cols]
+            sequence_features = numerical_cols + encoded_categorical_cols
+
+            # Add buffer for windowing (based on window_size)
+            buffer = pd.Timedelta(days=self.window_size + 5)
+
+            # For training: can't add buffer before start, use exact dates
+            train_data = df_work[train_start:train_end]
+            # For val/test: add buffer for windowing
+            val_data = df_work[val_start - buffer:val_end]
+            test_data = df_work[test_start - buffer:test_end]
+
+            # Create sequences for each period
+            for period_data, sequences_list, targets_list, start_date, end_date, is_test in [
+                (train_data, train_sequences, train_targets, train_start, train_end, False),
+                (val_data, val_sequences, val_targets, val_start, val_end, False),
+                (test_data, test_sequences, test_targets, test_start, test_end, True)
+            ]:
+                clean_data = period_data[sequence_features + [self.target_column]]
+
+                if len(clean_data) >= self.window_size:
+                    for i in range(self.window_size, len(clean_data)):
+                        target_date = clean_data.index[i]
+
+                        # Only include if target is in actual period (not buffer)
+                        if start_date <= target_date <= end_date:
+                            seq = clean_data.iloc[i-self.window_size:i][sequence_features].values
+                            sequences_list.append(seq)
+                            targets_list.append(clean_data.iloc[i][self.target_column])
+                            if is_test:
+                                test_dates.append(target_date)
+
+        # Store processed sequences
+        self.X_train = np.array(train_sequences)
+        self.y_train = np.array(train_targets)
+        self.X_val = np.array(val_sequences)
+        self.y_val = np.array(val_targets)
+        self.X_test = np.array(test_sequences)
+        self.y_test = np.array(test_targets)
+        self.test_dates = pd.DatetimeIndex(test_dates)
+
+        # Store features for model building
+        self.numerical_features = numerical_cols
+        self.categorical_features = encoded_categorical_cols
+
+    @classmethod
+    def compile_keras_model(cls, keras_model, target_type: str):
+        """Compile the model"""
+        if target_type == 'regression':
+            keras_model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
+                loss='mse',
+                metrics=['mae']
+            )
+        else:  # classification
+            keras_model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
+                loss='binary_crossentropy',
+                metrics=['accuracy']
+            )
 
     @abstractmethod
     def build_model(self):
@@ -84,29 +237,11 @@ class BaseModel(ABC):
         pass
 
     @abstractmethod
-    def train(self, X_train: np.ndarray, y_train: np.ndarray,
-              X_val: np.ndarray, y_val: np.ndarray) -> Dict[str, float]:
+    def train(self) -> Dict[str, float]:
         """Train the model and return training history"""
         pass
 
     @abstractmethod
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self) -> np.ndarray:
         """Make predictions"""
         pass
-
-    def split_data(self, X: np.ndarray, y: np.ndarray, dates: pd.DatetimeIndex) -> Dict:
-        """Date-based train/val/test split using fixed boundaries"""
-        masks = self.data_splitter.get_date_masks(dates)
-
-        return {
-            'X_train': X[masks['train']],
-            'y_train': y[masks['train']],
-            'X_val': X[masks['val']],
-            'y_val': y[masks['val']],
-            'X_test': X[masks['test']],
-            'y_test': y[masks['test']],
-            'dates_train': dates[masks['train']],
-            'dates_val': dates[masks['val']],
-            'dates_test': dates[masks['test']],
-            'idx_test': np.where(masks['test'])[0]
-        }

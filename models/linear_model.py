@@ -1,49 +1,76 @@
 from .base_model import BaseModel
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.linear_model import Ridge, LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 
 class LinearModel(BaseModel):
     is_implemented = True
 
-    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
-        super().__init__(model_name, data_config, models_config, target_config)
+    def __init__(self, model_name: str, config: dict, target_config: dict):
+        super().__init__(model_name, config, target_config)
         self.scaler = StandardScaler()
 
     def build_model(self):
-        """Initialize sklearn linear model based on task type"""
-        if self.target_config['type'] == 'regression':
-            self.model = LinearRegression()
-        else:  # classification
-            self.model = LogisticRegression(max_iter=1000, random_state=42)
+        """Will build while training to adjust hyperparameters"""
+        pass
 
-    def train(self, X_train: np.ndarray, y_train: np.ndarray,
-              X_val: np.ndarray, y_val: np.ndarray) -> dict:
-        """Train the linear model"""
+    def train(self):
+        """Train the linear model using stored data with hyperparameter tuning"""
         # Scale features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_val_scaled = self.scaler.transform(X_val)
+        X_train_scaled = self.scaler.fit_transform(self.X_train)
+        X_val_scaled = self.scaler.transform(self.X_val)
 
-        # Fit model
-        self.model.fit(X_train_scaled, y_train)
-
-        # Calculate training metrics
-        train_pred = self.model.predict(X_train_scaled)
-        val_pred = self.model.predict(X_val_scaled)
-
-        history = {}
+        # Hyperparameter tuning using validation set
         if self.target_config['type'] == 'regression':
-            history['train_rmse'] = np.sqrt(np.mean((y_train - train_pred) ** 2))
-            history['val_rmse'] = np.sqrt(np.mean((y_val - val_pred) ** 2))
-        else:
-            history['train_accuracy'] = np.mean(y_train == train_pred)
-            history['val_accuracy'] = np.mean(y_val == val_pred)
+            # Try different alpha values for Ridge regression
+            alphas = np.logspace(-3, 3, 10) # [1e-3, 1e-2, 1e-1, 1, 10, 100, 1000]
+            best_score = float('inf')
+            best_alpha = alphas[0]
 
-        return history
+            for alpha in alphas:
+                model = Ridge(alpha=alpha)
+                model.fit(X_train_scaled, self.y_train)
+                val_pred = model.predict(X_val_scaled)
+                val_rmse = np.sqrt(np.mean((self.y_val - val_pred) ** 2))
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions with scaling"""
-        X_scaled = self.scaler.transform(X)
-        return self.model.predict(X_scaled)
+                if val_rmse < best_score:
+                    best_score = val_rmse
+                    best_alpha = alpha
+
+            # Train final model with best hyperparameter
+            self.model = Ridge(alpha=best_alpha)
+
+        else:  # classification
+            # Try different C values for Logistic regression
+            C_values = np.logspace(-3, 3, 10) # [1e-3, 1e-2, 1e-1, 1, 10, 100, 1000]
+            best_score = 0.0
+            best_C = C_values[0]
+
+            for C in C_values:
+                model = LogisticRegression(C=C, max_iter=1000, random_state=1543)
+                model.fit(X_train_scaled, self.y_train)
+                val_pred = model.predict(X_val_scaled)
+                val_accuracy = np.mean(self.y_val == val_pred)
+
+                if val_accuracy > best_score:
+                    best_score = val_accuracy
+                    best_C = C
+
+            # Train final model with best hyperparameter
+            self.model = LogisticRegression(C=best_C, max_iter=1000, random_state=1543)
+
+        # Fit final model
+        self.model.fit(X_train_scaled, self.y_train)
+
+    def predict(self) -> np.ndarray:
+        """Make predictions on stored test data with scaling"""
+        X_test_scaled = self.scaler.transform(self.X_test)
+        predictions = self.model.predict(X_test_scaled)
+
+        # Convert probabilities to binary for classification
+        if self.target_config['type'] == 'classification':
+            predictions = (predictions > 0.5).astype(int)
+
+        return predictions

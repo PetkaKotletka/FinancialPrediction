@@ -10,119 +10,120 @@ from tensorflow.keras import layers
 class CNNModel(BaseModel):
     is_implemented = True
 
-    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
-        super().__init__(model_name, data_config, models_config, target_config)
+    def __init__(self, model_name: str, config: dict, target_config: dict):
+        super().__init__(model_name, config, target_config)
         self.scaler = StandardScaler()
-        config = self.models_config['cnn']
-        self.window_size = config['window_size']
-        self.batch_size = config['batch_size']
-        self.epochs = config['epochs']
+        model_config = self.models_config['cnn']
+        self.window_size = model_config['window_size']
+        self.batch_size = model_config['batch_size']
+        self.epochs = model_config['epochs']
 
     def get_model_type(self):
-        """CNN needs different data format"""
-        return 'cnn'
+        """CNN uses sequence data like RNN"""
+        return 'sequence'
 
     def build_model(self):
-        """Build CNN architecture for time series"""
-        n_features = len(self.feature_columns)
+        """Build 1D CNN architecture with embedding layers for categorical features"""
+        # Separate numerical and categorical features (same as RNN)
+        n_numerical = len(self.numerical_features)
+        n_categorical = len(self.categorical_features)
 
-        model = keras.Sequential([
-            # Use Conv1D for time series
-            layers.Conv1D(32, kernel_size=3, activation='relu', padding='same'),
-            layers.MaxPooling1D(pool_size=2),
+        # Numerical input
+        numerical_input = layers.Input(shape=(self.window_size, n_numerical), name='numerical_input')
 
-            # Single convolutional block
-            layers.Conv1D(16, kernel_size=3, activation='relu', padding='same'),
-            layers.GlobalAveragePooling1D(),  # Better than Flatten for time series
+        # Categorical inputs and embeddings (same as RNN)
+        categorical_inputs = []
+        embeddings = []
 
-            # Single dense layer
-            layers.Dense(32, activation='relu'),
-            layers.Dropout(0.1),
-        ])
+        for i, cat_feature in enumerate(self.categorical_features):
+            cat_name = cat_feature.replace('_encoded', '')
+            vocab_size = self.categorical_vocab_sizes[cat_name]
+            embedding_dim = min(50, (vocab_size + 1) // 2)
 
-        # Output layer based on task type
-        if self.target_config['type'] == 'regression':
-            model.add(layers.Dense(1, kernel_initializer='normal'))
-            loss = 'mse'
-            metrics = ['mae']
-        else:  # classification
-            model.add(layers.Dense(1, activation='sigmoid'))
-            loss = 'binary_crossentropy'
-            metrics = ['accuracy']
+            cat_input = layers.Input(shape=(self.window_size,), name=f'{cat_feature}_input')
+            categorical_inputs.append(cat_input)
 
-        model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
-            loss=loss,
-            metrics=metrics
-        )
+            embedding = layers.Embedding(vocab_size, embedding_dim, name=f'{cat_feature}_embedding')(cat_input)
+            embeddings.append(embedding)
 
-        self.model = model
-
-    def train(self, X_train: np.ndarray, y_train: np.ndarray,
-              X_val: np.ndarray, y_val: np.ndarray) -> dict:
-        """Train CNN with early stopping"""
-        # Scale features (3D data)
-        n_samples, n_timesteps, n_features = X_train.shape
-        X_train_reshaped = X_train.reshape(-1, n_features)
-        X_train_scaled = self.scaler.fit_transform(X_train_reshaped)
-        X_train_scaled = X_train_scaled.reshape(n_samples, n_timesteps, n_features)
-
-        X_val_reshaped = X_val.reshape(-1, n_features)
-        X_val_scaled = self.scaler.transform(X_val_reshaped)
-        X_val_scaled = X_val_scaled.reshape(X_val.shape[0], n_timesteps, n_features)
-
-        # Early stopping callback
-        early_stop = keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=10,
-            restore_best_weights=True
-        )
-
-        # Learning rate reduction
-        lr_reducer = keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=5,
-            min_lr=1e-6,
-            verbose=0
-        )
-
-        # Train
-        history = self.model.fit(
-            X_train_scaled, y_train,
-            validation_data=(X_val_scaled, y_val),
-            epochs=self.epochs,
-            batch_size=self.batch_size,
-            callbacks=[early_stop, lr_reducer],
-            verbose=0
-        )
-
-        # Get final metrics
-        train_results = self.model.evaluate(X_train_scaled, y_train, verbose=0)
-        val_results = self.model.evaluate(X_val_scaled, y_val, verbose=0)
-
-        if self.target_config['type'] == 'regression':
-            return {
-                'train_rmse': np.sqrt(train_results[0]),
-                'val_rmse': np.sqrt(val_results[0])
-            }
+        # Concatenate all features
+        if embeddings:
+            all_features = layers.Concatenate(axis=-1)([numerical_input] + embeddings)
         else:
-            return {
-                'train_accuracy': train_results[1],
-                'val_accuracy': val_results[1]
-            }
+            all_features = numerical_input
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions with scaling"""
-        # Scale features (3D data)
-        n_samples, n_timesteps, n_features = X.shape
-        X_reshaped = X.reshape(-1, n_features)
-        X_scaled = self.scaler.transform(X_reshaped)
-        X_scaled = X_scaled.reshape(n_samples, n_timesteps, n_features)
+        # CNN layers (1D convolution for time series)
+        x = all_features
+        x = layers.Conv1D(32, kernel_size=3, activation='relu', padding='same')(x)
+        x = layers.MaxPooling1D(pool_size=2)(x)
+        x = layers.Conv1D(16, kernel_size=3, activation='relu', padding='same')(x)
+        x = layers.GlobalAveragePooling1D()(x)  # Better than Flatten for time series
 
-        predictions = self.model.predict(X_scaled, verbose=0)
+        # Dense layers
+        x = layers.Dense(32, activation='relu')(x)
+        x = layers.Dropout(0.1)(x)
 
-        # Convert probabilities to binary predictions for classification
+        # Output layer
+        if self.target_config['type'] == 'regression':
+            output = layers.Dense(1, kernel_initializer='normal')(x)
+        else:
+            output = layers.Dense(1, activation='sigmoid')(x)
+
+        # Create model with multiple inputs
+        inputs = [numerical_input] + categorical_inputs
+        self.model = keras.Model(inputs=inputs, outputs=output)
+
+        # Compile using base class method
+        self.compile_keras_model(self.model, self.target_config['type'])
+
+    def train(self) -> dict:
+        """Train CNN with early stopping using stored data"""
+        # Prepare data for multiple inputs (same as RNN)
+        train_inputs = self._prepare_model_inputs(self.X_train)
+        val_inputs = self._prepare_model_inputs(self.X_val)
+
+        # Train with callbacks
+        early_stop = keras.callbacks.EarlyStopping(
+            monitor='val_loss', patience=10, restore_best_weights=True
+        )
+        lr_reducer = keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6, verbose=0
+        )
+
+        self.model.fit(
+            train_inputs, self.y_train,
+            validation_data=(val_inputs, self.y_val),
+            epochs=self.epochs, batch_size=self.batch_size,
+            callbacks=[early_stop, lr_reducer], verbose=0
+        )
+
+    def _prepare_model_inputs(self, X):
+        """Split data into numerical and categorical inputs with scaling (same as RNN)"""
+        n_numerical = len(self.numerical_features)
+        n_categorical = len(self.categorical_features)
+
+        # Split based on known order: numerical first, then categorical
+        X_numerical = X[:, :, :n_numerical]
+
+        # Scale numerical features
+        n_samples, n_timesteps, n_features = X_numerical.shape
+        X_num_reshaped = X_numerical.reshape(-1, n_features)
+        X_num_scaled = self.scaler.fit_transform(X_num_reshaped) if not hasattr(self.scaler, 'mean_') else self.scaler.transform(X_num_reshaped)
+        X_num_scaled = X_num_scaled.reshape(n_samples, n_timesteps, n_features)
+
+        # Extract categorical features (each gets its own input)
+        inputs = [X_num_scaled]
+        for i in range(n_categorical):
+            cat_idx = n_numerical + i
+            inputs.append(X[:, :, cat_idx])
+
+        return inputs
+
+    def predict(self) -> np.ndarray:
+        """Make predictions on stored test data"""
+        test_inputs = self._prepare_model_inputs(self.X_test)
+        predictions = self.model.predict(test_inputs, verbose=0)
+
         if self.target_config['type'] == 'classification':
             predictions = (predictions > 0.5).astype(int)
 

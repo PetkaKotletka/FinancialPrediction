@@ -4,7 +4,7 @@ from pathlib import Path
 from collections import defaultdict
 import pandas as pd
 from config import CONFIG
-from data import DataDownloader, DataPreprocessor, FeatureEngineer, DataSplitter
+from data import DataDownloader
 from models import BaseModel, LinearModel, ARIMAModel, DecisionTreeModel, XGBoostModel, LSTMModel, GRUModel, CNNModel
 from evaluation import ModelEvaluator
 from utils import ModelIO, ModelPlotter
@@ -13,9 +13,9 @@ from utils import ModelIO, ModelPlotter
 class StockPredictionCLI:
     def __init__(self):
         self.config = CONFIG
-        self.model_io = ModelIO(CONFIG)
+        self.model_io = ModelIO(self.config)
         self.evaluator = ModelEvaluator()
-        self.plotter = ModelPlotter(CONFIG)
+        self.plotter = ModelPlotter(self.config)
         self.target_dict = {t['name']: t for t in self.config['targets']}
 
         # Model registry
@@ -35,7 +35,7 @@ class StockPredictionCLI:
             'line': 'line_chart'
         }
 
-        self.trained_models = {}
+        self.models = {}
         self.data = None
 
     def startup(self):
@@ -51,7 +51,6 @@ class StockPredictionCLI:
         self._load_models()
 
         print("\nSystem ready.")
-        print("\n" + "-" * 50)
         self.print_commands()
 
     def print_commands(self):
@@ -89,25 +88,11 @@ class StockPredictionCLI:
                 self.data[ticker] = pd.read_csv(ticker_path, index_col=0, parse_dates=True)
             print(f"Data loaded: {len(self.data)} tickers")
         else:
-            print("No preprocessed data found. Preprocessing...")
+            print("Some data is missing. Preprocessing...")
 
-            # Initialize components
-            downloader = DataDownloader(self.config['data'])
-            preprocessor = DataPreprocessor(self.config)
-            feature_engineer = FeatureEngineer(self.config['data'])
-
-            # Download data
-            stock_data = downloader.download_stock_data()
-            fred_data = downloader.download_fred_data()
-
-            # Preprocess
-            data_dict = preprocessor.clean_data(stock_data, fred_data)
-            data_dict = preprocessor.create_targets(data_dict)
-            data_dict = preprocessor.create_regime_features(data_dict)
-
-            # Feature engineering
-            data_dict = feature_engineer.create_technical_features(data_dict)
-            data_dict = feature_engineer.create_sector_features(data_dict)
+            # Download data and create features
+            downloader = DataDownloader(self.config)
+            data_dict = downloader.get_data()
 
             # Save each ticker separately
             processed_path.mkdir(parents=True, exist_ok=True)
@@ -118,63 +103,81 @@ class StockPredictionCLI:
             print("Data preprocessed and saved per ticker.")
 
     def _load_models(self):
-        """Load saved trained models"""
+        """Load saved models and prepare data if needed"""
         print("\nLoading models...")
 
         for model_class in self.model_classes:
             for target_name in self.target_dict:
                 model_name = f'{model_class}_{target_name}'
+
+                # Initialize model
+                model = self._init_model(model_class, model_name, target_name)
+
                 if self.model_io.model_exists(model_name):
+                    # Load trained model
                     model_data = self.model_io.load_model(model_name, self.target_dict[target_name]['type'])
 
-                    model = self._init_model(model_class, model_name, target_name)
+                    # Restore model weights
                     model.model = model_data['model']
-
-                    if hasattr(model, 'scaler'):
+                    if hasattr(model, 'scaler') and 'scaler' in model_data:
                         model.scaler = model_data['scaler']
 
-                    self.trained_models[model_name] = {
-                        'model': model,
-                        'class': model_class,
-                        'target': target_name
-                    }
-                    print(f"  ✓ {model_name} loaded")
+                    # Restore test targets and dates
+                    model.y_test = model_data['y_test']
+                    model.test_dates = model_data['test_dates']
 
-        print(f"Loaded {len(self.trained_models)} models.")
+                    # Restore processed data
+                    if model.get_model_type() != 'arima':
+                        model.X_train = model_data['X_train']
+                        model.y_train = model_data['y_train']
+                        model.X_val = model_data['X_val']
+                        model.y_val = model_data['y_val']
+                        model.X_test = model_data['X_test']
+                        if model.get_model_type() == 'sequence':
+                            model.categorical_vocab_sizes = model_data['categorical_vocab_sizes']
+                            model.numerical_features = model_data['numerical_features']
+                            model.categorical_features = model_data['categorical_features']
+                    else:
+                        model.ticker_data = model_data['ticker_data']
+
+                    print(f"  ✓ {model_name} loaded")
+                else:
+                    print(f"  Preparing data for {model_name}")
+                    model.prepare_data(self.data)
+
+                # Store model
+                self.models[model_name] = {
+                    'model': model, 'class': model_class, 'target': target_name, 'trained': self.model_io.model_exists(model_name)
+                }
 
     def _init_model(self, model_class_name: str, model_name: str, target_name: str) -> BaseModel:
         """Initialize model based on model name"""
-        model = self.model_classes[model_class_name](model_name, self.config['data'], self.config['models'], self.target_dict[target_name])
+        model = self.model_classes[model_class_name](model_name, self.config, self.target_dict[target_name])
         return model
 
     def cmd_models(self):
         """Show model status"""
-        model_class_targets = defaultdict(list)
-
-        for info in self.trained_models.values():
-            model_class = info['class']
-            target_name = info['target']
-            model_class_targets[model_class].append(target_name)
-
         print("\nModel Status:")
         print("-" * 50)
 
+        trained_models = {info['class']: [] for info in self.models.values()}
+        untrained_models = {info['class']: [] for info in self.models.values()}
+
+        for model_name, info in self.models.items():
+            if info['trained']:
+                trained_models[info['class']].append(info['target'])
+            else:
+                untrained_models[info['class']].append(info['target'])
+
         print("Trained models:")
-        if model_class_targets:
-            for model_class, target_names in model_class_targets.items():
-                print(f"  • {model_class}: {', '.join(target_names)}")
-        else:
-            print("  None")
+        for model_class, targets in trained_models.items():
+            if targets:
+                print(f"  • {model_class}: {', '.join(targets)}")
 
         print("\nUntrained models:")
-        found = False
-        for model_class in self.model_classes:
-            if model_class not in model_class_targets and self.model_classes[model_class].is_implemented:
-                print(f"  • {model_class}")
-                found = True
-
-        if not found:
-            print("  None")
+        for model_class, targets in untrained_models.items():
+            if targets:
+                print(f"  • {model_class}: {', '.join(targets)}")
 
     def cmd_train(self, model_class_name, target_name=None):
         """Train a specific model for a specific target (or all if not specified)"""
@@ -188,153 +191,74 @@ class StockPredictionCLI:
 
         target_names = self.target_dict.keys() if not target_name else [target_name]
 
-        if model_class_name == 'arima': # ARIMA can only be used for 1-day return prediction
-            if target_name != 'return_1d':
-                print("Warning: ARIMA can only be used for 1-day return prediction, changing target to 'return_1d'")
-            target_names = ['return_1d']
-
         # Train for each target
         for target_name in target_names:
             model_name = f'{model_class_name}_{target_name}'
 
-            if model_name in self.trained_models.keys():
-                print(f"Model '{model_class_name}' is already trained for target '{target_name}'. Retraining...")
+            if model_name not in self.models:
+                print(f"Error: Model '{model_name}' not found.")
+                continue
+
+            model = self.models[model_name]['model']
+
+            if self.models[model_name]['trained']:
+                print(f"Model '{model_name}' already trained. Retraining...")
             else:
-                print(f"\nTraining '{model_class_name}' for target: '{target_name}'.")
+                print(f"Training '{model_name}'...")
 
-            model = self._init_model(model_class_name, model_name, target_name)
-
-            # Get split dates
-            from data.data_splitter import DataSplitter
-            splitter = DataSplitter(self.config['data'])
-            split_dates = splitter.get_split_dates()
-
-            # Prepare training data with history for windowing
-            train_data_dict = {}
-            val_data_dict = {}
-
-            for ticker, df in self.data.items():
-                # For sequence models, add history before training period
-                if model.get_model_type() in ['sequence', 'cnn']:
-                    # Add 30 days before training start for windowing
-                    window_buffer = 30
-                    expanded_train_start = (pd.to_datetime(split_dates['train_start']) -
-                                          pd.Timedelta(days=window_buffer)).strftime('%Y-%m-%d')
-                    expanded_val_start = (pd.to_datetime(split_dates['val_start']) -
-                                        pd.Timedelta(days=window_buffer)).strftime('%Y-%m-%d')
-
-                    train_data_dict[ticker] = splitter.filter_data_by_dates(
-                        df, expanded_train_start, split_dates['train_end'])
-                    val_data_dict[ticker] = splitter.filter_data_by_dates(
-                        df, expanded_val_start, split_dates['val_end'])
-                else:
-                    # Tabular and ARIMA models use exact periods
-                    train_data_dict[ticker] = splitter.filter_data_by_dates(
-                        df, split_dates['train_start'], split_dates['train_end'])
-                    val_data_dict[ticker] = splitter.filter_data_by_dates(
-                        df, split_dates['val_start'], split_dates['val_end'])
-
-            # Prepare data for training
-            X_train, y_train = model.prepare_data(train_data_dict)
-            X_val, y_val = model.prepare_data(val_data_dict)
-
-            # Build model
             model.build_model()
+            model.train()
 
-            # Train
-            history = model.train(X_train, y_train, X_val, y_val)
-
-            # Save model
             self.model_io.save_model(model, model_name)
-            self.trained_models[model_name] = {'model': model, 'history': history, 'class': model_class_name, 'target': target_name}
-            print(f"Model '{model_name}' trained and saved.")
+            self.models[model_name]['trained'] = True
+            print(f"✓ {model_name} trained and saved.")
 
     def cmd_evaluate(self, model_names=None):
         """Evaluate trained models"""
-        # If no specific models requested, evaluate all trained models
+        # Select models to evaluate
         if not model_names:
-            models_to_evaluate = self.trained_models
+            models_to_evaluate = {name: info for name, info in self.models.items() if info['trained']}
         else:
-            # Build dict from provided model class names
             models_to_evaluate = {}
             for model_class in model_names:
-                for model_name, info in self.trained_models.items():
-                    if info['class'] == model_class:
+                for model_name, info in self.models.items():
+                    if info['class'] == model_class and info['trained']:
                         models_to_evaluate[model_name] = info
 
         if not models_to_evaluate:
-            print("No models to evaluate.")
+            print("No trained models to evaluate.")
             return
 
         print(f"\nEvaluating {len(models_to_evaluate)} models...")
         print("-" * 50)
 
-        # Use simplified evaluation
-        results = self.evaluator.evaluate_all_models(self.config['data'], models_to_evaluate, self.data)
+        # Evaluate each model
+        results = {}
 
-        # Display summary
+        for model_name, model_info in models_to_evaluate.items():
+            model = model_info['model']
+            results[model_name] = self.evaluator.evaluate_model(model)
+
+        # Display results
         print(f"\n{'='*50}")
         print("EVALUATION SUMMARY")
         print(f"{'='*50}")
 
         for model_name, result in results.items():
-            if result:
-                print(f"\n{model_name}:")
-                if 'directional_accuracy' in result:
-                    print(f"  RMSE: {result['rmse']:.4f}")
-                    print(f"  Directional Accuracy: {result['directional_accuracy']:.4f}")
-                    if 'sharpe_ratio' in result:
-                        print(f"  Sharpe Ratio: {result['sharpe_ratio']:.4f}")
-                else:
-                    print(f"  Accuracy: {result['accuracy']:.4f}")
-                    print(f"  F1 Score: {result['f1_score']:.4f}")
+            print(f"\n{model_name}:")
+            if 'directional_accuracy' in result:
+                print(f"  RMSE: {result['rmse']:.4f}")
+                print(f"  Directional Accuracy: {result['directional_accuracy']:.4f}")
             else:
-                print(f"\n{model_name}: No results")
+                print(f"  Accuracy: {result['accuracy']:.4f}")
+                print(f"  F1 Score: {result['f1_score']:.4f}")
 
     def cmd_backtest(self, model_class_name, target_name='return_1d'):
         """Run backtest for a model"""
-        model_name = f'{model_class_name}_{target_name}'
-
-        if model_name not in self.trained_models:
-            print(f"Error: Model '{model_class_name}' not trained for {target_name}")
-            return
-
-        # Validate target type for backtesting
-        if target_name not in ['return_1d', 'direction_1d']:
-            print(f"Error: Backtesting only supports return_1d and direction_1d targets")
-            return
-
-        print(f"\nRunning backtest for {model_class_name} ({target_name})...")
-        model = self.trained_models[model_name]['model']
-
-        # Get test data
-        splitter = DataSplitter(self.config['data'])
-        split_dates = splitter.get_split_dates()
-        test_data = splitter.filter_data_by_dates(
-            self.data,
-            split_dates['test_start'],
-            split_dates['test_end']
-        )
-
-        # Run backtest
-        results = self.evaluator.backtest_model(model, test_data)
-
-        # Display results
-        metrics = results['metrics']
-        print(f"\nBacktest Results:")
-        print(f"  Total Return: {metrics['total_return']:.2%}")
-        print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
-        print(f"  Max Drawdown: {metrics['max_drawdown']:.2%}")
-        print(f"  Win Rate: {metrics['win_rate']:.2%}")
-        print(f"  Number of Trades: {metrics['n_trades']}")
-
-        # Generate plot
-        plot_path = self.plotter.plot_backtest_results(results, model_class_name, 'threshold')
-        print(f"\nSaved backtest plot to: {plot_path}")
+        pass # TODO
 
     def cmd_plot(self, plot_type, model_class_name=None):
         """Generate plots for a model or all models"""
-
         if plot_type not in self.plot_methods:
             print(f"Error: Unknown plot type '{plot_type}'")
             print(f"Available plot types: {', '.join(self.plot_methods.keys())}")
@@ -343,8 +267,8 @@ class StockPredictionCLI:
         # If no model specified, plot for all available models
         if model_class_name is None:
             available_models = []
-            for model_name, model_info in self.trained_models.items():
-                if model_name.endswith('_return_1d'):
+            for model_name, model_info in self.models.items():
+                if model_name.endswith('_return_1d') and model_info['trained']:
                     model_class = model_info['class']
                     available_models.append(model_class)
 
@@ -353,12 +277,10 @@ class StockPredictionCLI:
                 return
 
             print(f"\nGenerating {plot_type} plots for all available models: {', '.join(available_models)}")
-
             all_results = []
             for model_class in available_models:
                 model_name = f'{model_class}_return_1d'
-                model = self.trained_models[model_name]['model']
-
+                model = self.models[model_name]['model']
                 print(f"  Plotting {model_class}...")
                 plotter_method = getattr(self.plotter, self.plot_methods[plot_type])
                 results = plotter_method(model)
@@ -369,18 +291,16 @@ class StockPredictionCLI:
                 print(f"  {result}")
             return
 
-        # Single model case (existing logic)
+        # Single model case
         model_name = f'{model_class_name}_return_1d'
-        if model_name not in self.trained_models:
+        if model_name not in self.models or not self.models[model_name]['trained']:
             print(f"Error: Model '{model_class_name}' not trained for return_1d")
             return
 
         print(f"\nGenerating {plot_type} plots for {model_class_name}...")
-        model = self.trained_models[model_name]['model']
-
+        model = self.models[model_name]['model']
         plotter_method = getattr(self.plotter, self.plot_methods[plot_type])
         results = plotter_method(model)
-
         print(f"Saved plot to: {results[0]}")
 
     def run(self):

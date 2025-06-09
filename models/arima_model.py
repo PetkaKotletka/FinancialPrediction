@@ -7,98 +7,163 @@ from statsmodels.tsa.arima.model import ARIMA
 class ARIMAModel(BaseModel):
     is_implemented = True
 
-    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
-        super().__init__(model_name, data_config, models_config, target_config)
-        self.arima_config = models_config['arima']
-        self.fitted_values = None
-        self.training_index = None
-        self.models = {}
+    def __init__(self, model_name: str, config: dict, target_config: dict):
+        super().__init__(model_name, config, target_config)
+        self.arima_config = self.models_config['arima']
+        self.window_size = 252  # 1 year of trading days
+        self.retrain_frequency = 21  # Retrain every month (21 trading days)
         self.ticker_data = {}
-        self.current_ticker = None
+        self.last_retrain_idx = {}
 
     def get_model_type(self):
         """ARIMA uses time series data"""
         return 'arima'
 
+    def prepare_data(self, data_dict: dict):
+        """Convert ticker_data to y_test for evaluation compatibility"""
+        super().prepare_data(data_dict)
+        all_y_test = []
+        all_test_dates = []
+
+        for ticker in self.ticker_data.keys():
+            all_y_test.extend(self.ticker_data[ticker]['test_targets'])
+            all_test_dates.extend(self.ticker_data[ticker]['test_dates'])
+
+        self.y_test = np.array(all_y_test)
+        self.test_dates = pd.DatetimeIndex(all_test_dates)
+
     def build_model(self):
-        """ARIMA doesn't pre-build, it fits directly on data"""
-        if self.target_column != 'return_1d':
-            raise ValueError(
-                f"ARIMA can only be used for 1-day return prediction. "
-                f"Target '{self.target_column}' is not supported. "
-                f"Please use ARIMA only with 'return_1d' target."
-            )
+        """ARIMA builds models during training, not beforehand"""
         pass
 
-    def train(self, X_train: np.ndarray, y_train: np.ndarray,
-          X_val: np.ndarray = None, y_val: np.ndarray = None) -> dict:
-        """Train separate ARIMA model for each ticker in training data"""
+    def train(self) -> dict:
+        """Train ARIMA models using rolling window approach"""
         results = {}
 
-        for ticker in self.ticker_data.keys():  # For each ticker we found during prepare_data
-            ticker_prices = self.ticker_data[ticker]['prices']
-            ticker_returns = self.ticker_data[ticker]['returns']
+        for ticker in self.ticker_data.keys():
+            ticker_prices = self.ticker_data[ticker]['train_prices']
+
+            if len(ticker_prices) < self.window_size:
+                print(f"Warning: Not enough data for {ticker}, using available {len(ticker_prices)} points")
+                continue
 
             try:
-                # Train ARIMA on this ticker's price series
-                arima_model = ARIMA(
-                    ticker_prices,
-                    order=(self.arima_config['p'],
-                           self.arima_config['d'],
-                           self.arima_config['q'])
-                ).fit()
+                # Train initial model on first window
+                initial_window = ticker_prices[:self.window_size]
+                arima_model = self._fit_arima_robust(initial_window)
 
-                self.models[ticker] = {
-                    'model': arima_model,
-                    'training_prices': ticker_prices
-                }
+                # Store initial model and training data
+                self.ticker_data[ticker]['model'] = arima_model
+                self.ticker_data[ticker]['current_data'] = initial_window.copy()
+                self.last_retrain_idx[ticker] = self.window_size
 
-                # Forecast next price for validation
-                if len(ticker_prices) > 0:
-                    next_price = arima_model.forecast(steps=1)[0]
-                    pred_return = (next_price / ticker_prices[-1]) - 1
-                    results[f'{ticker}_val_sample'] = pred_return
+                results[f'{ticker}_trained'] = True
 
             except Exception as e:
                 print(f"Failed to train ARIMA for {ticker}: {e}")
-                # Store a dummy model that predicts zero
-                self.models[ticker] = None
+                self.ticker_data[ticker]['model'] = None
+                results[f'{ticker}_trained'] = False
 
-        return {'trained_tickers': len(self.models)}
+        return results
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Route predictions to appropriate ticker's ARIMA model"""
+    def predict(self) -> np.ndarray:
+        """Make rolling predictions with periodic retraining"""
+        all_predictions = []
 
-        if self.current_ticker not in self.models or self.models[self.current_ticker] is None:
-            # No model for this ticker, return zeros
-            return np.zeros(len(X))
+        for ticker in self.ticker_data.keys():
+            if self.ticker_data[ticker]['model'] is None:
+                # No model for this ticker, add zeros
+                test_size = len(self.ticker_data[ticker]['test_targets'])
+                all_predictions.extend([0.0] * test_size)
+                continue
 
-        ticker_model = self.models[self.current_ticker]['model']
-        training_prices = self.models[self.current_ticker]['training_prices']
+            ticker_predictions = self._predict_ticker(ticker)
+            all_predictions.extend(ticker_predictions)
+
+        return np.array(all_predictions)
+
+    def _predict_ticker(self, ticker):
+        """Make predictions for a specific ticker"""
+        model = self.ticker_data[ticker]['model']
+        current_data = self.ticker_data[ticker]['current_data']
+        test_prices = self.ticker_data[ticker]['test_prices']
+        train_prices = self.ticker_data[ticker]['train_prices']
 
         predictions = []
-        current_prices = training_prices.copy()
-        test_prices = X.flatten()
+        data_for_prediction = current_data.copy()
 
-        for i in range(len(test_prices)):
+        for i, actual_price in enumerate(test_prices):
+            # Check if we need to retrain
+            if i > 0 and i % self.retrain_frequency == 0:
+                try:
+                    # Use most recent 252 days including some test data
+                    total_available = len(train_prices) + i  # How much data we have so far
+                    if total_available >= self.window_size:
+                        if i < self.window_size:
+                            # Still have enough training data
+                            new_window = train_prices[-self.window_size:]
+                        else:
+                            # Need to include some test data
+                            train_portion = train_prices[-(self.window_size - i):]
+                            test_portion = test_prices[:i]
+                            new_window = np.concatenate([train_portion, test_portion])
+
+                        model = self._fit_arima_robust(new_window)
+                        data_for_prediction = new_window.copy()
+                except Exception:
+                    pass
+
+            # Make prediction
             try:
-                # Refit ARIMA with updated price series (rolling approach)
-                updated_model = ARIMA(
-                    current_prices,
-                    order=(self.arima_config['p'],
-                           self.arima_config['d'],
-                           self.arima_config['q'])
-                ).fit()
+                # Determine number of steps based on target
+                if self.target_column == 'return_5d':
+                    steps = 5
+                else:
+                    steps = 1
 
-                # Forecast next price
-                next_price = updated_model.forecast(steps=1)[0]
-                pred_return = (next_price / current_prices[-1]) - 1
+                forecast = model.forecast(steps=steps)
+
+                if steps == 1:
+                    next_price = forecast[0]
+                else:
+                    next_price = forecast[-1]  # Use the 5-step ahead forecast
+
+                # Convert price prediction to return prediction
+                current_price = data_for_prediction[-1]
+                pred_return = (next_price / current_price) - 1
+
+                # Handle classification targets
+                if self.target_config['type'] == 'classification':
+                    pred_return = 1 if pred_return > 0 else 0
+
                 predictions.append(pred_return)
 
-            except:
+            except Exception:
                 predictions.append(0.0)
 
-            # Update with actual observed price
-            current_prices = np.append(current_prices, test_prices[i])
+            # Update data for next prediction
+            data_for_prediction = np.append(data_for_prediction, actual_price)
 
-        return np.array(predictions)
+        return predictions
+
+    def _fit_arima_robust(self, data):
+        """Fit ARIMA with robust parameter handling"""
+        try:
+            # Try original parameters first
+            model = ARIMA(
+                data,
+                order=(self.arima_config['p'], self.arima_config['d'], self.arima_config['q'])
+            )
+            fitted = model.fit(method='lbfgs', maxiter=50)
+            return fitted
+        except:
+            try:
+                # Fallback to simpler parameters
+                model = ARIMA(data, order=(1, 1, 0))  # Simple AR(1) with differencing
+                fitted = model.fit(method='lbfgs', maxiter=50)
+                return fitted
+            except:
+                # Last resort: random walk
+                model = ARIMA(data, order=(0, 1, 0))
+                fitted = model.fit()
+                return fitted

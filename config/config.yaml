@@ -20,15 +20,14 @@ data:
   
 # Feature engineering
 features:
-  technical_indicators:
-    rsi_period: 14
-    macd_fast: 12
-    macd_slow: 26
-    macd_signal: 9
-    bb_period: 20
-    bb_std: 2
-    sma_short: 50
-    sma_long: 200
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_period: 20
+  bb_std: 2
+  sma_short: 50
+  sma_long: 200
   
 # Target configuration  
 targets:

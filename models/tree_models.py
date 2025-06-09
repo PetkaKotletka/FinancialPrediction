@@ -26,29 +26,28 @@ class DecisionTreeModel(BaseModel):
                 random_state=1543
             )
 
-    def train(self, X_train: np.ndarray, y_train: np.ndarray,
-              X_val: np.ndarray, y_val: np.ndarray) -> dict:
-        """Train the decision tree model"""
+    def train(self) -> dict:
+        """Train the decision tree model using stored data"""
         # Fit model (no scaling needed for trees)
-        self.model.fit(X_train, y_train)
+        self.model.fit(self.X_train, self.y_train)
 
         # Calculate training and validation metrics
-        train_pred = self.model.predict(X_train)
-        val_pred = self.model.predict(X_val)
+        train_pred = self.model.predict(self.X_train)
+        val_pred = self.model.predict(self.X_val)
 
         history = {}
         if self.target_config['type'] == 'regression':
-            history['train_rmse'] = np.sqrt(np.mean((y_train - train_pred) ** 2))
-            history['val_rmse'] = np.sqrt(np.mean((y_val - val_pred) ** 2))
+            history['train_rmse'] = np.sqrt(np.mean((self.y_train - train_pred) ** 2))
+            history['val_rmse'] = np.sqrt(np.mean((self.y_val - val_pred) ** 2))
         else:
-            history['train_accuracy'] = np.mean(y_train == train_pred)
-            history['val_accuracy'] = np.mean(y_val == val_pred)
+            history['train_accuracy'] = np.mean(self.y_train == train_pred)
+            history['val_accuracy'] = np.mean(self.y_val == val_pred)
 
         return history
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions (no scaling needed)"""
-        return self.model.predict(X)
+    def predict(self) -> np.ndarray:
+        """Make predictions on stored test data"""
+        return self.model.predict(self.X_test)
 
 
 class XGBoostModel(BaseModel):
@@ -63,39 +62,38 @@ class XGBoostModel(BaseModel):
             'learning_rate': config['learning_rate'],
             'subsample': config['subsample'],
             'colsample_bytree': config['colsample_bytree'],
-            'early_stopping_rounds': config['early_stopping_rounds'],
             'random_state': 1543,
             'n_jobs': -1
         }
 
-        model_class = xgb.XGBRegressor if self.target_config['type'] == 'regression' else xgb.XGBClassifier
-        self.model = model_class(**params)
+        if self.target_config['type'] == 'regression':
+            self.model = xgb.XGBRegressor(**params)
+        else:
+            self.model = xgb.XGBClassifier(**params)
 
-    def train(self, X_train: np.ndarray, y_train: np.ndarray,
-              X_val: np.ndarray, y_val: np.ndarray) -> dict:
-        """Train XGBoost with early stopping"""
-
+    def train(self) -> dict:
+        """Train XGBoost with early stopping using stored data"""
         # Train with early stopping using validation set
         self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
+            self.X_train, self.y_train,
+            eval_set=[(self.X_val, self.y_val)],
             verbose=False
         )
 
         # Calculate training and validation metrics
-        train_pred = self.model.predict(X_train)
-        val_pred = self.model.predict(X_val)
+        train_pred = self.model.predict(self.X_train)
+        val_pred = self.model.predict(self.X_val)
 
         history = {}
         if self.target_config['type'] == 'regression':
-            history['train_rmse'] = np.sqrt(np.mean((y_train - train_pred) ** 2))
-            history['val_rmse'] = np.sqrt(np.mean((y_val - val_pred) ** 2))
+            history['train_rmse'] = np.sqrt(np.mean((self.y_train - train_pred) ** 2))
+            history['val_rmse'] = np.sqrt(np.mean((self.y_val - val_pred) ** 2))
         else:
-            history['train_accuracy'] = np.mean(y_train == train_pred)
-            history['val_accuracy'] = np.mean(y_val == val_pred)
+            history['train_accuracy'] = np.mean(self.y_train == train_pred)
+            history['val_accuracy'] = np.mean(self.y_val == val_pred)
 
         return history
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions"""
-        return self.model.predict(X)
+    def predict(self) -> np.ndarray:
+        """Make predictions on stored test data"""
+        return self.model.predict(self.X_test)

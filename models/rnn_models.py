@@ -11,133 +11,139 @@ from datetime import datetime, timedelta
 class LSTMModel(BaseModel):
     is_implemented = True
 
-    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
-        super().__init__(model_name, data_config, models_config, target_config)
+    def __init__(self, model_name: str, config: dict, target_config: dict):
+        super().__init__(model_name, config, target_config)
         self.scaler = StandardScaler()
-        config = self.models_config['lstm']
-        self.window_size = config['window_size']
-        self.batch_size = config['batch_size']
-        self.epochs = config['epochs']
-        self.hidden_units = config['hidden_units']
-        self.n_layers = config['n_layers']
-        self.dropout_rate = config['dropout_rate']
+        model_config = self._get_model_config()
+        self.window_size = model_config['window_size']
+        self.batch_size = model_config['batch_size']
+        self.epochs = model_config['epochs']
+        self.hidden_units = model_config['hidden_units']
+        self.n_layers = model_config['n_layers']
+        self.dropout_rate = model_config['dropout_rate']
+
+    def _get_model_config(self):
+        return self.models_config['lstm']
 
     def get_model_type(self):
         """RNN uses sequence data"""
         return 'sequence'
 
     def build_model(self):
-        """Build LSTM architecture"""
-        n_features = len(self.feature_columns)
+        """Build LSTM architecture with embedding layers for categorical features"""
+        # Separate numerical and categorical features
+        n_numerical = len(self.numerical_features)
+        n_categorical = len(self.categorical_features)
 
-        model = keras.Sequential()
+        # Numerical input
+        numerical_input = layers.Input(shape=(self.window_size, n_numerical), name='numerical_input')
 
-        # Input layer
-        model.add(layers.InputLayer(shape=(self.window_size, n_features)))
+        # Categorical inputs and embeddings
+        categorical_inputs = []
+        embeddings = []
+
+        for i, cat_feature in enumerate(self.categorical_features):
+            # Get vocabulary size for this categorical feature
+            cat_name = cat_feature.replace('_encoded', '')  # Remove _encoded suffix
+            vocab_size = self.categorical_vocab_sizes[cat_name]
+            embedding_dim = min(50, (vocab_size + 1) // 2)  # Rule of thumb for embedding size
+
+            # Categorical input for this feature
+            cat_input = layers.Input(shape=(self.window_size,), name=f'{cat_feature}_input')
+            categorical_inputs.append(cat_input)
+
+            # Embedding layer
+            embedding = layers.Embedding(vocab_size, embedding_dim, name=f'{cat_feature}_embedding')(cat_input)
+            embeddings.append(embedding)
+
+        # Concatenate all features
+        if embeddings:
+            # Combine numerical and embedded categorical features
+            all_features = layers.Concatenate(axis=-1)([numerical_input] + embeddings)
+        else:
+            # Only numerical features
+            all_features = numerical_input
 
         # LSTM layers
+        x = all_features
+        x = self._build_rnn_layers(x)
+
+        # Dense layer
+        x = layers.Dense(16, activation='relu')(x)
+
+        # Output layer
+        if self.target_config['type'] == 'regression':
+            output = layers.Dense(1, kernel_initializer='normal')(x)
+        else:
+            output = layers.Dense(1, activation='sigmoid')(x)
+
+        # Create model with multiple inputs
+        inputs = [numerical_input] + categorical_inputs
+        self.model = keras.Model(inputs=inputs, outputs=output)
+
+        # Compile using base class method
+        self.compile_keras_model(self.model, self.target_config['type'])
+
+    def _build_rnn_layers(self, x):
         for i in range(self.n_layers):
-            return_sequences = (i < self.n_layers - 1)  # Only last layer returns single output
-            model.add(layers.LSTM(
+            return_sequences = (i < self.n_layers - 1)
+            x = layers.LSTM(
                 self.hidden_units,
                 return_sequences=return_sequences,
                 dropout=self.dropout_rate
-            ))
+            )(x)
+        return x
 
-        # Dense layer
-        model.add(layers.Dense(16, activation='relu'))
+    def train(self) -> dict:
+        """Train LSTM with early stopping using stored data"""
+        # Prepare data for multiple inputs
+        train_inputs = self._prepare_model_inputs(self.X_train)
+        val_inputs = self._prepare_model_inputs(self.X_val)
 
-        # Output layer based on task type
-        if self.target_config['type'] == 'regression':
-            model.add(layers.Dense(1, kernel_initializer='normal'))
-            loss = 'mse'
-            metrics = ['mae']
-        else:  # classification
-            model.add(layers.Dense(1, activation='sigmoid'))
-            loss = 'binary_crossentropy'
-            metrics = ['accuracy']
-
-        model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
-            loss=loss,
-            metrics=metrics
-        )
-
-        self.model = model
-
-    def train(self, X_train: np.ndarray, y_train: np.ndarray,
-              X_val: np.ndarray, y_val: np.ndarray) -> dict:
-        """Train LSTM with early stopping"""
-        # Scale features
-        n_samples, n_timesteps, n_features = X_train.shape
-        X_train_reshaped = X_train.reshape(-1, n_features)
-        X_train_scaled = self.scaler.fit_transform(X_train_reshaped)
-        X_train_scaled = X_train_scaled.reshape(n_samples, n_timesteps, n_features)
-
-        X_val_reshaped = X_val.reshape(-1, n_features)
-        X_val_scaled = self.scaler.transform(X_val_reshaped)
-        X_val_scaled = X_val_scaled.reshape(X_val.shape[0], n_timesteps, n_features)
-
-        # Early stopping
+        # Train with multiple inputs
         early_stop = keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=10,
-            restore_best_weights=True
+            monitor='val_loss', patience=10, restore_best_weights=True
         )
-
-        # Learning rate reduction
         lr_reducer = keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=5,
-            min_lr=1e-6,
-            verbose=0
+            monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6, verbose=0
         )
 
-        # Train
-        history = self.model.fit(
-            X_train_scaled, y_train,
-            validation_data=(X_val_scaled, y_val),
-            epochs=self.epochs,
-            batch_size=self.batch_size,
-            callbacks=[early_stop, lr_reducer],
-            verbose=0
+        self.model.fit(
+            train_inputs, self.y_train,
+            validation_data=(val_inputs, self.y_val),
+            epochs=self.epochs, batch_size=self.batch_size,
+            callbacks=[early_stop, lr_reducer], verbose=0
         )
 
-        # Get final metrics
-        train_results = self.model.evaluate(X_train_scaled, y_train, verbose=0)
-        val_results = self.model.evaluate(X_val_scaled, y_val, verbose=0)
+    def _prepare_model_inputs(self, X):
+        """Split data into numerical and categorical inputs with scaling"""
+        n_numerical = len(self.numerical_features)
+        n_categorical = len(self.categorical_features)
 
-        if self.target_config['type'] == 'regression':
-            return {
-                'train_rmse': np.sqrt(train_results[0]),
-                'val_rmse': np.sqrt(val_results[0])
-            }
-        else:
-            return {
-                'train_accuracy': train_results[1],
-                'val_accuracy': val_results[1]
-            }
+        # Split based on known order: numerical first, then categorical
+        X_numerical = X[:, :, :n_numerical]
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions with scaling"""
-        # print(f"LSTM predict - Input shape: {X.shape}")
-        # print(f"Scaler mean: {self.scaler.mean_[:5]}...")  # First 5 features
-        # print(f"Scaler scale: {self.scaler.scale_[:5]}...")
+        # Scale numerical features
+        n_samples, n_timesteps, n_features = X_numerical.shape
+        X_num_reshaped = X_numerical.reshape(-1, n_features)
+        X_num_scaled = self.scaler.fit_transform(X_num_reshaped) if not hasattr(self.scaler, 'mean_') else self.scaler.transform(X_num_reshaped)
+        X_num_scaled = X_num_scaled.reshape(n_samples, n_timesteps, n_features)
 
-        # Scale features
-        n_samples, n_timesteps, n_features = X.shape
-        X_reshaped = X.reshape(-1, n_features)
-        X_scaled = self.scaler.transform(X_reshaped)
-        X_scaled = X_scaled.reshape(n_samples, n_timesteps, n_features)
+        # Extract categorical features (each gets its own input)
+        inputs = [X_num_scaled]
+        for i in range(n_categorical):
+            cat_idx = n_numerical + i
+            inputs.append(X[:, :, cat_idx])
 
-        predictions = self.model.predict(X_scaled, verbose=0)
+        return inputs
 
-        # Convert probabilities to binary predictions for classification
+    def predict(self) -> np.ndarray:
+        """Make predictions on stored test data"""
+        test_inputs = self._prepare_model_inputs(self.X_test)
+        predictions = self.model.predict(test_inputs, verbose=0)
+
         if self.target_config['type'] == 'classification':
             predictions = (predictions > 0.5).astype(int)
-
-        # print(f"Predictions - min: {predictions.min():.6f}, max: {predictions.max():.6f}")
 
         return predictions.flatten()
 
@@ -146,51 +152,15 @@ class GRUModel(LSTMModel):
     """GRU Model - inherits from LSTM with only architecture difference"""
     is_implemented = True
 
-    def __init__(self, model_name: str, data_config: dict, models_config: dict, target_config: dict):
-        super().__init__(model_name, data_config, models_config, target_config)
-        config = self.models_config['gru']
-        self.window_size = config['window_size']
-        self.batch_size = config['batch_size']
-        self.epochs = config['epochs']
-        self.hidden_units = config['hidden_units']
-        self.n_layers = config['n_layers']
-        self.dropout_rate = config['dropout_rate']
+    def _get_model_config(self):
+        return self.models_config['gru']
 
-    def build_model(self):
-        """Build GRU architecture - same as LSTM but with GRU layers"""
-        n_features = len(self.feature_columns)
-
-        model = keras.Sequential()
-
-        # Input layer
-        model.add(layers.InputLayer(shape=(self.window_size, n_features)))
-
-        # GRU layers
+    def _build_rnn_layers(self, x):
         for i in range(self.n_layers):
             return_sequences = (i < self.n_layers - 1)
-            model.add(layers.GRU(
+            x = layers.GRU(
                 self.hidden_units,
                 return_sequences=return_sequences,
                 dropout=self.dropout_rate
-            ))
-
-        # Dense layer
-        model.add(layers.Dense(16, activation='relu'))
-
-        # Output layer based on task type
-        if self.target_config['type'] == 'regression':
-            model.add(layers.Dense(1, kernel_initializer='normal'))
-            loss = 'mse'
-            metrics = ['mae']
-        else:  # classification
-            model.add(layers.Dense(1, activation='sigmoid'))
-            loss = 'binary_crossentropy'
-            metrics = ['accuracy']
-
-        model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
-            loss=loss,
-            metrics=metrics
-        )
-
-        self.model = model
+            )(x)
+        return x
