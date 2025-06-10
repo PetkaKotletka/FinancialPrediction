@@ -16,10 +16,7 @@ class ModelIO:
         """Save model with minimal necessary data"""
         model_path = self.models_dir / model_name
 
-        model_data = {
-            'y_test': model.y_test,
-            'test_dates': model.test_dates
-        }
+        model_data = { 'y_test': model.y_test }
 
         # Handle model weights
         if hasattr(model.model, 'save') and hasattr(model.model, 'fit'):
@@ -39,7 +36,8 @@ class ModelIO:
                 'y_train': model.y_train,
                 'X_val': model.X_val,
                 'y_val': model.y_val,
-                'X_test': model.X_test
+                'X_test': model.X_test,
+                'X_test_index': model.X_test_index,
             })
             if model.get_model_type() == 'sequence':
                 model_data.update({

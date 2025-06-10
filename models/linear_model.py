@@ -64,7 +64,7 @@ class LinearModel(BaseModel):
         # Fit final model
         self.model.fit(X_train_scaled, self.y_train)
 
-    def predict(self) -> np.ndarray:
+    def predict(self) -> pd.Series:
         """Make predictions on stored test data with scaling"""
         X_test_scaled = self.scaler.transform(self.X_test)
         predictions = self.model.predict(X_test_scaled)
@@ -73,4 +73,4 @@ class LinearModel(BaseModel):
         if self.target_config['type'] == 'classification':
             predictions = (predictions > 0.5).astype(int)
 
-        return predictions
+        return pd.Series(predictions, index=self.X_test_index, name='predictions').sort_index()

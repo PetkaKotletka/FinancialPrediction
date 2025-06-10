@@ -19,19 +19,6 @@ class ARIMAModel(BaseModel):
         """ARIMA uses time series data"""
         return 'arima'
 
-    def prepare_data(self, data_dict: dict):
-        """Convert ticker_data to y_test for evaluation compatibility"""
-        super().prepare_data(data_dict)
-        all_y_test = []
-        all_test_dates = []
-
-        for ticker in self.ticker_data.keys():
-            all_y_test.extend(self.ticker_data[ticker]['test_targets'])
-            all_test_dates.extend(self.ticker_data[ticker]['test_dates'])
-
-        self.y_test = np.array(all_y_test)
-        self.test_dates = pd.DatetimeIndex(all_test_dates)
-
     def build_model(self):
         """ARIMA builds models during training, not beforehand"""
         pass
@@ -66,21 +53,19 @@ class ARIMAModel(BaseModel):
 
         return results
 
-    def predict(self) -> np.ndarray:
-        """Make rolling predictions with periodic retraining"""
+    def predict(self) -> pd.Series:
         all_predictions = []
+        multiindex_data = []
 
         for ticker in self.ticker_data.keys():
-            if self.ticker_data[ticker]['model'] is None:
-                # No model for this ticker, add zeros
-                test_size = len(self.ticker_data[ticker]['test_targets'])
-                all_predictions.extend([0.0] * test_size)
-                continue
+            ticker_predictions = self._predict_ticker(ticker) if self.ticker_data[ticker]['model'] else [0.0] * len(self.ticker_data[ticker]['test_targets'])
+            test_dates = self.ticker_data[ticker]['test_dates']
 
-            ticker_predictions = self._predict_ticker(ticker)
             all_predictions.extend(ticker_predictions)
+            multiindex_data.extend([(date, ticker) for date in test_dates])
 
-        return np.array(all_predictions)
+        multiindex = pd.MultiIndex.from_tuples(multiindex_data, names=['date', 'ticker'])
+        return pd.Series(all_predictions, index=multiindex, name='predictions').sort_index()
 
     def _predict_ticker(self, ticker):
         """Make predictions for a specific ticker"""

@@ -16,7 +16,7 @@ class ModelPlotter:
         # Get predictions from model's stored test data
         y_pred = model.predict()
         y_test = model.y_test
-        test_dates = model.test_dates
+        test_dates = y_pred.index.get_level_values('date')
 
         print(f"Plotting {len(y_pred)} predictions")
 
@@ -70,7 +70,7 @@ class ModelPlotter:
         # Get predictions from model's stored test data
         y_pred = model.predict()
         y_test = model.y_test
-        test_dates = model.test_dates
+        test_dates = y_pred.index.get_level_values('date')
 
         print(f"Plotting {len(y_pred)} predictions over time")
 

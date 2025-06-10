@@ -137,7 +137,7 @@ class LSTMModel(BaseModel):
 
         return inputs
 
-    def predict(self) -> np.ndarray:
+    def predict(self) -> pd.Series:
         """Make predictions on stored test data"""
         test_inputs = self._prepare_model_inputs(self.X_test)
         predictions = self.model.predict(test_inputs, verbose=0)
@@ -145,7 +145,7 @@ class LSTMModel(BaseModel):
         if self.target_config['type'] == 'classification':
             predictions = (predictions > 0.5).astype(int)
 
-        return predictions.flatten()
+        return pd.Series(predictions.flatten(), index=self.X_test_index, name='predictions').sort_index()
 
 
 class GRUModel(LSTMModel):

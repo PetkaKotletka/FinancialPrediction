@@ -45,9 +45,10 @@ class DecisionTreeModel(BaseModel):
 
         return history
 
-    def predict(self) -> np.ndarray:
+    def predict(self) -> pd.Series:
         """Make predictions on stored test data"""
-        return self.model.predict(self.X_test)
+        predictions = self.model.predict(self.X_test)
+        return pd.Series(predictions, index=self.X_test_index, name='predictions').sort_index()
 
 
 class XGBoostModel(BaseModel):
@@ -94,6 +95,7 @@ class XGBoostModel(BaseModel):
 
         return history
 
-    def predict(self) -> np.ndarray:
+    def predict(self) -> pd.Series:
         """Make predictions on stored test data"""
-        return self.model.predict(self.X_test)
+        predictions = self.model.predict(self.X_test)
+        return pd.Series(predictions, index=self.X_test_index, name='predictions').sort_index()

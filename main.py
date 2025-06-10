@@ -124,7 +124,6 @@ class StockPredictionCLI:
 
                     # Restore test targets and dates
                     model.y_test = model_data['y_test']
-                    model.test_dates = model_data['test_dates']
 
                     # Restore processed data
                     if model.get_model_type() != 'arima':
@@ -133,6 +132,7 @@ class StockPredictionCLI:
                         model.X_val = model_data['X_val']
                         model.y_val = model_data['y_val']
                         model.X_test = model_data['X_test']
+                        model.X_test_index = model_data['X_test_index']
                         if model.get_model_type() == 'sequence':
                             model.categorical_vocab_sizes = model_data['categorical_vocab_sizes']
                             model.numerical_features = model_data['numerical_features']
@@ -141,9 +141,6 @@ class StockPredictionCLI:
                         model.ticker_data = model_data['ticker_data']
 
                     print(f"  ✓ {model_name} loaded")
-                else:
-                    print(f"  Preparing data for {model_name}")
-                    model.prepare_data(self.data)
 
                 # Store model
                 self.models[model_name] = {
@@ -205,6 +202,8 @@ class StockPredictionCLI:
                 print(f"Model '{model_name}' already trained. Retraining...")
             else:
                 print(f"Training '{model_name}'...")
+                print(f"  Preparing data for {model_name}")
+                model.prepare_data(self.data)
 
             model.build_model()
             model.train()

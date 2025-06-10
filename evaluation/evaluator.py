@@ -8,8 +8,12 @@ class ModelEvaluator:
         y_pred = model.predict()
         y_test = model.y_test
 
-        # Print sample count for verification
-        print(f"  {model.model_name}: {len(y_pred)} predicted samples")
+        # Validate MultiIndex alignment
+        if not y_pred.index.equals(y_test.index):
+            raise ValueError(f"MultiIndex misalignment in {model.model_name}")
+
+        print(f"  {model.model_name}: {len(y_pred)} predicted samples "
+              f"({len(y_pred.index.get_level_values('ticker').unique())} tickers)")
 
         # Calculate metrics based on task type
         metrics = calculate_metrics(y_test, y_pred, model.target_config['type'])

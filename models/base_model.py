@@ -43,6 +43,9 @@ class BaseModel(ABC):
         if self.get_model_type() == 'arima':
             # ARIMA: store per-ticker price series
             self.ticker_data = {}
+            multiindex_data = []
+            all_targets = []
+
             for ticker, df in data_dict.items():
                 # Filter by date periods
                 train_data = df[train_start:train_end]
@@ -55,6 +58,17 @@ class BaseModel(ABC):
                     'test_targets': test_data[self.target_column].values,
                     'test_dates': test_data.index
                 }
+
+                # Build MultiIndex data in same loop
+                test_targets = test_data[self.target_column].values
+                test_dates = test_data.index
+
+                all_targets.extend(test_targets)
+                multiindex_data.extend([(date, ticker) for date in test_dates])
+
+            # Create MultiIndex Series
+            multiindex = pd.MultiIndex.from_tuples(multiindex_data, names=['date', 'ticker'])
+            self.y_test = pd.Series(all_targets, index=multiindex).sort_index()
         else:
             # Auto-select features
             sample_df = next(iter(data_dict.values()))
@@ -91,8 +105,7 @@ class BaseModel(ABC):
 
         all_train_X, all_train_y = [], []
         all_val_X, all_val_y = [], []
-        all_test_X, all_test_y = [], []
-        test_dates = []
+        all_test_data = []
 
         for ticker, df in data_dict.items():
             df_work = df.copy()
@@ -118,18 +131,25 @@ class BaseModel(ABC):
             all_val_X.append(val_data[final_features].values)
             all_val_y.append(val_data[self.target_column].values)
 
-            all_test_X.append(test_data[final_features].values)
-            all_test_y.append(test_data[self.target_column].values)
-            test_dates.extend(test_data.index.tolist())
+            # Add ticker column for MultiIndex
+            test_data_with_ticker = test_data.copy()
+            test_data_with_ticker['ticker'] = ticker
+            all_test_data.append(test_data_with_ticker)
 
         # Store processed data
         self.X_train = np.vstack(all_train_X)
         self.y_train = np.concatenate(all_train_y)
         self.X_val = np.vstack(all_val_X)
         self.y_val = np.concatenate(all_val_y)
-        self.X_test = np.vstack(all_test_X)
-        self.y_test = np.concatenate(all_test_y)
-        self.test_dates = pd.DatetimeIndex(test_dates)
+
+        # Concatenate with MultiIndex
+        combined_test = pd.concat(all_test_data, axis=0)
+        combined_test = combined_test.set_index(['ticker'], append=True)  # Creates (date, ticker) MultiIndex
+        combined_test = combined_test.sort_index()
+
+        self.X_test = combined_test[final_features].values
+        self.y_test = combined_test[self.target_column]  # Series with MultiIndex
+        self.X_test_index = combined_test.index  # Store MultiIndex for predict()
 
     def _prepare_sequence_data(self, data_dict, numerical_cols, categorical_cols):
         """Prepare sequence data with label encoding for categorical features"""
@@ -160,7 +180,7 @@ class BaseModel(ABC):
         train_sequences, train_targets = [], []
         val_sequences, val_targets = [], []
         test_sequences, test_targets = [], []
-        test_dates = []
+        test_multiindex_data = []
 
         for ticker, df in data_dict.items():
             df_work = df.copy()
@@ -174,7 +194,7 @@ class BaseModel(ABC):
             sequence_features = numerical_cols + encoded_categorical_cols
 
             # Add buffer for windowing (based on window_size)
-            buffer = pd.Timedelta(days=self.window_size + 5)
+            buffer = pd.Timedelta(days=self.window_size * 1.5) # ~30 calendar days = ~22 trading days
 
             # For training: can't add buffer before start, use exact dates
             train_data = df_work[train_start:train_end]
@@ -200,16 +220,18 @@ class BaseModel(ABC):
                             sequences_list.append(seq)
                             targets_list.append(clean_data.iloc[i][self.target_column])
                             if is_test:
-                                test_dates.append(target_date)
+                                test_multiindex_data.append((target_date, ticker))
 
         # Store processed sequences
         self.X_train = np.array(train_sequences)
         self.y_train = np.array(train_targets)
         self.X_val = np.array(val_sequences)
         self.y_val = np.array(val_targets)
+
+        multiindex = pd.MultiIndex.from_tuples(test_multiindex_data, names=['date', 'ticker'])
         self.X_test = np.array(test_sequences)
-        self.y_test = np.array(test_targets)
-        self.test_dates = pd.DatetimeIndex(test_dates)
+        self.y_test = pd.Series(test_targets, index=multiindex).sort_index()
+        self.X_test_index = multiindex
 
         # Store features for model building
         self.numerical_features = numerical_cols
