@@ -105,7 +105,8 @@ class BaseModel(ABC):
 
         all_train_X, all_train_y = [], []
         all_val_X, all_val_y = [], []
-        all_test_data = []
+        all_test_X, all_test_y = [], []
+        multiindex_data = []
 
         for ticker, df in data_dict.items():
             df_work = df.copy()
@@ -131,10 +132,11 @@ class BaseModel(ABC):
             all_val_X.append(val_data[final_features].values)
             all_val_y.append(val_data[self.target_column].values)
 
-            # Add ticker column for MultiIndex
-            test_data_with_ticker = test_data.copy()
-            test_data_with_ticker['ticker'] = ticker
-            all_test_data.append(test_data_with_ticker)
+            all_test_X.append(test_data[final_features].values)
+            all_test_y.append(test_data[self.target_column].values)
+
+            # Build MultiIndex data explicitly
+            multiindex_data.extend([(date, ticker) for date in test_data.index])
 
         # Store processed data
         self.X_train = np.vstack(all_train_X)
@@ -142,14 +144,12 @@ class BaseModel(ABC):
         self.X_val = np.vstack(all_val_X)
         self.y_val = np.concatenate(all_val_y)
 
-        # Concatenate with MultiIndex
-        combined_test = pd.concat(all_test_data, axis=0)
-        combined_test = combined_test.set_index(['ticker'], append=True)  # Creates (date, ticker) MultiIndex
-        combined_test = combined_test.sort_index()
+        # Create MultiIndex
+        multiindex = pd.MultiIndex.from_tuples(multiindex_data, names=['date', 'ticker'])
 
-        self.X_test = combined_test[final_features].values
-        self.y_test = combined_test[self.target_column]  # Series with MultiIndex
-        self.X_test_index = combined_test.index  # Store MultiIndex for predict()
+        self.X_test = np.vstack(all_test_X)
+        self.y_test = pd.Series(np.concatenate(all_test_y), index=multiindex).sort_index()
+        self.X_test_index = multiindex
 
     def _prepare_sequence_data(self, data_dict, numerical_cols, categorical_cols):
         """Prepare sequence data with label encoding for categorical features"""
@@ -264,6 +264,6 @@ class BaseModel(ABC):
         pass
 
     @abstractmethod
-    def predict(self) -> np.ndarray:
+    def predict(self, return_probabilities=False) -> pd.Series:
         """Make predictions"""
         pass

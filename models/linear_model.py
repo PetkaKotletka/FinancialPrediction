@@ -64,13 +64,16 @@ class LinearModel(BaseModel):
         # Fit final model
         self.model.fit(X_train_scaled, self.y_train)
 
-    def predict(self) -> pd.Series:
+    def predict(self, return_probabilities=False) -> pd.Series:
         """Make predictions on stored test data with scaling"""
         X_test_scaled = self.scaler.transform(self.X_test)
-        predictions = self.model.predict(X_test_scaled)
 
-        # Convert probabilities to binary for classification
-        if self.target_config['type'] == 'classification':
-            predictions = (predictions > 0.5).astype(int)
+        if self.target_config['type'] == 'classification' and return_probabilities:
+            # Return probabilities for positive class
+            predictions = self.model.predict_proba(X_test_scaled)[:, 1]
+        else:
+            predictions = self.model.predict(X_test_scaled)
+            if self.target_config['type'] == 'classification' and not return_probabilities:
+                predictions = (predictions > 0.5).astype(int)
 
         return pd.Series(predictions, index=self.X_test_index, name='predictions').sort_index()

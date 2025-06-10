@@ -45,9 +45,14 @@ class DecisionTreeModel(BaseModel):
 
         return history
 
-    def predict(self) -> pd.Series:
+    def predict(self, return_probabilities=False) -> pd.Series:
         """Make predictions on stored test data"""
-        predictions = self.model.predict(self.X_test)
+        if self.target_config['type'] == 'classification' and return_probabilities:
+            # Return probabilities for positive class
+            predictions = self.model.predict_proba(self.X_test)[:, 1]
+        else:
+            predictions = self.model.predict(self.X_test)
+
         return pd.Series(predictions, index=self.X_test_index, name='predictions').sort_index()
 
 
@@ -95,7 +100,12 @@ class XGBoostModel(BaseModel):
 
         return history
 
-    def predict(self) -> pd.Series:
+    def predict(self, return_probabilities=False) -> pd.Series:
         """Make predictions on stored test data"""
-        predictions = self.model.predict(self.X_test)
+        if self.target_config['type'] == 'classification' and return_probabilities:
+            # Return probabilities for positive class
+            predictions = self.model.predict_proba(self.X_test)[:, 1]
+        else:
+            predictions = self.model.predict(self.X_test)
+
         return pd.Series(predictions, index=self.X_test_index, name='predictions').sort_index()

@@ -137,12 +137,13 @@ class LSTMModel(BaseModel):
 
         return inputs
 
-    def predict(self) -> pd.Series:
+    def predict(self, return_probabilities=False) -> pd.Series:
         """Make predictions on stored test data"""
         test_inputs = self._prepare_model_inputs(self.X_test)
         predictions = self.model.predict(test_inputs, verbose=0)
 
-        if self.target_config['type'] == 'classification':
+        # For classification, only convert to binary if not returning probabilities
+        if self.target_config['type'] == 'classification' and not return_probabilities:
             predictions = (predictions > 0.5).astype(int)
 
         return pd.Series(predictions.flatten(), index=self.X_test_index, name='predictions').sort_index()

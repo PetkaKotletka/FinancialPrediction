@@ -252,9 +252,19 @@ class StockPredictionCLI:
                 print(f"  Accuracy: {result['accuracy']:.4f}")
                 print(f"  F1 Score: {result['f1_score']:.4f}")
 
-    def cmd_backtest(self, model_class_name, target_name='return_1d'):
-        """Run backtest for a model"""
-        pass # TODO
+    def cmd_backtest(self, model_class_name):
+        """Run confidence-based backtest for direction model"""
+        model_name = f'{model_class_name}_direction_1d'
+
+        if model_name not in self.models or not self.models[model_name]['trained']:
+            print(f"Error: Model '{model_class_name}' not trained for direction_1d")
+            return
+
+        model = self.models[model_name]['model']
+        results = self.evaluator.confidence_backtest(model, self.plotter)
+
+        if results:
+            print(f"\nConfidence-based backtest completed for {model_class_name}")
 
     def cmd_plot(self, plot_type, model_class_name=None):
         """Generate plots for a model or all models"""
@@ -310,11 +320,7 @@ class StockPredictionCLI:
             'models': lambda args: self.cmd_models(),
             'train': lambda args: self.cmd_train(args[0], args[1]) if len(args) > 1 else self.cmd_train(args[0]),
             'evaluate': lambda args: self.cmd_evaluate(args) if len(args) > 0 else self.cmd_evaluate(),
-            'backtest': lambda args: (
-                self.cmd_backtest(args[0], args[1]) if len(args) > 1
-                else self.cmd_backtest(args[0]) if len(args) == 1
-                else print("Usage: backtest <model> [target]")
-            ),
+            'backtest': lambda args: self.cmd_backtest(args[0]),
             'help': lambda args: self.print_commands(),
             'plot': lambda args: (
                 self.cmd_plot(args[0], args[1]) if len(args) > 1
