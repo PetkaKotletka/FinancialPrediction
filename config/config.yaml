@@ -9,9 +9,9 @@ data:
     ^DJI: 'Index'
     ^IXIC: 'Index'
   fred_indicators: ['VIXCLS', 'GDP', 'T10YIE']
-  start_date: '2015-01-01'
+  start_date: '2014-01-01'
   end_date: '2024-12-31'
-  train_start: '2015-01-01'
+  train_start: '2014-01-01'
   train_end: '2021-06-30'
   val_start: '2021-07-01'
   val_end: '2023-03-31'
@@ -68,7 +68,7 @@ models:
   lstm:
     epochs: 100
     batch_size: 64
-    window_size: 20
+    window_size: 40
     hidden_units: 32
     n_layers: 1
     dropout_rate: 0.1

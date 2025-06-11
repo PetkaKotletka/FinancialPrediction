@@ -2,7 +2,7 @@ import numpy as np
 from .metrics import calculate_metrics
 
 class ModelEvaluator:
-    def evaluate_model(self, model, plotter):
+    def evaluate_model(self, model):
         """Evaluate a single model using its stored test data"""
         # Get predictions and actual values
         y_pred = model.predict()
@@ -20,14 +20,12 @@ class ModelEvaluator:
 
         return metrics
 
-    def confidence_backtest(self, model, plotter):
+    def confidence_backtest(self, model, ticker, plotter, plot_results=False, verbose=True):
         """
         Confidence-based trading backtest for direction models
         Only trades when model confidence >= threshold, using single ticker for temporal consistency
         """
-
-        confidence_threshold=0.2
-        ticker = '^GSPC'
+        confidence_threshold = 0.2
 
         if model.target_config['name'] != 'direction_1d':
             print(f"Backtest only supports direction_1d models, got {model.target_config['name']}")
@@ -70,12 +68,21 @@ class ModelEvaluator:
             print(f"No {ticker} predictions meet confidence threshold {confidence_threshold}")
             return None
 
-        # Get return data (simplified - using random walk for now)
-        # In practice, you'd get actual returns from return_1d predictions
-        np.random.seed(42)  # For reproducible results
-        ticker_returns = np.random.normal(0.0005, 0.015, len(ticker_dates))  # SPY-like returns
+        ticker_data = plotter.data[ticker]
 
-        # Apply confidence filter - now we have proper time series
+        # Look up actual returns for the test dates
+        ticker_returns = []
+        for date in ticker_dates:
+            if date in ticker_data.index and 'return_1d' in ticker_data.columns:
+                actual_return = ticker_data.loc[date, 'return_1d']
+                ticker_returns.append(actual_return)
+            else:
+                print(f"Warning: Missing return data for {date}")
+                return None
+
+        ticker_returns = np.array(ticker_returns)
+
+        # Apply confidence filter
         conf_dates = [ticker_dates[i] for i in range(len(ticker_dates)) if high_conf_mask[i]]
         conf_predictions = ticker_predictions[high_conf_mask]
         conf_returns = ticker_returns[high_conf_mask]
@@ -91,7 +98,11 @@ class ModelEvaluator:
 
         strategy_returns = np.array(strategy_returns)
 
-        # Calculate metrics
+        # Calculate buy-and-hold baseline (using all available returns)
+        buy_hold_cumulative = np.prod(1 + ticker_returns) - 1
+        buy_hold_sharpe = np.mean(ticker_returns) / np.std(ticker_returns) if np.std(ticker_returns) > 0 else 0
+
+        # Calculate strategy metrics
         total_trades = len(strategy_returns)
         total_ticker_predictions = len(ticker_predictions)
         win_rate = np.mean(strategy_returns > 0)
@@ -100,40 +111,60 @@ class ModelEvaluator:
         cumulative_return = np.prod(1 + strategy_returns) - 1
         traded_accuracy = np.mean(conf_predictions == conf_actual)
 
-        # Results
+        # Results with baseline comparison
         results = {
             'ticker': ticker,
             'confidence_threshold': confidence_threshold,
-            'total_trades': total_trades,
-            'percentage_of_predictions': (total_trades / total_ticker_predictions) * 100,
-            'win_rate': win_rate,
-            'accuracy': traded_accuracy,
-            'avg_return_per_trade': avg_return,
-            'cumulative_return': cumulative_return,
-            'sharpe_ratio': sharpe_ratio,
+            'strategy': {
+                'total_trades': total_trades,
+                'percentage_of_predictions': (total_trades / total_ticker_predictions) * 100,
+                'win_rate': win_rate,
+                'accuracy': traded_accuracy,
+                'avg_return_per_trade': avg_return,
+                'cumulative_return': cumulative_return,
+                'sharpe_ratio': sharpe_ratio,
+            },
+            'buy_hold_baseline': {
+                'cumulative_return': buy_hold_cumulative,
+                'sharpe_ratio': buy_hold_sharpe,
+                'total_days': len(ticker_returns)
+            },
             'total_ticker_predictions': total_ticker_predictions
         }
 
-        # Print results
-        print(f"Backtest Results for {ticker}:")
-        print(f"  Total {ticker} predictions: {total_ticker_predictions}")
-        print(f"  Total trades: {total_trades} ({results['percentage_of_predictions']:.1f}% of {ticker} predictions)")
-        print(f"  Directional accuracy: {traded_accuracy:.3f}")
-        print(f"  Win rate: {win_rate:.3f}")
-        print(f"  Avg return per trade: {avg_return:.4f}")
-        print(f"  Cumulative return: {cumulative_return:.3f}")
-        print(f"  Sharpe ratio: {sharpe_ratio:.3f}")
+        if verbose:
+            # Print results
+            print(f"Backtest Results for {ticker}:")
+            print(f"  Strategy Performance:")
+            print(f"    Total trades: {total_trades} ({results['strategy']['percentage_of_predictions']:.1f}% of predictions)")
+            print(f"    Win rate: {win_rate:.3f}")
+            print(f"    Avg return per trade: {avg_return:.4f}")
+            print(f"    Cumulative return: {cumulative_return:.3f}")
+            print(f"    Sharpe ratio: {sharpe_ratio:.3f}")
+            print(f"")
+            print(f"  Buy-and-Hold Baseline:")
+            print(f"    Cumulative return: {buy_hold_cumulative:.3f}")
+            print(f"    Sharpe ratio: {buy_hold_sharpe:.3f}")
+            print(f"")
+            print(f"  Strategy vs Baseline:")
+            print(f"    Excess return: {cumulative_return - buy_hold_cumulative:+.3f}")
 
-        # Prepare data for plotting (now in proper temporal order)
-        trade_data = {
-            'dates': conf_dates,
-            'returns': strategy_returns,
-            'predictions': conf_predictions,
-            'actual': conf_actual,
-            'ticker': ticker
-        }
-
-        # Generate backtest plot
-        plotter.backtest_history(model, results, trade_data)
+        # Generate plot if requested
+        if plot_results:
+            # Create flattened results for plotter compatibility
+            plotter_results = {
+                'confidence_threshold': confidence_threshold,
+                'total_trades': total_trades,
+                'win_rate': win_rate,
+                'accuracy': traded_accuracy
+            }
+            trade_data = {
+                'dates': conf_dates,
+                'returns': strategy_returns,
+                'predictions': conf_predictions,
+                'actual': conf_actual,
+                'ticker': ticker
+            }
+            plotter.backtest_history(model, plotter_results, trade_data)
 
         return results

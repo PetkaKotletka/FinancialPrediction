@@ -102,10 +102,10 @@ class LSTMModel(BaseModel):
 
         # Train with multiple inputs
         early_stop = keras.callbacks.EarlyStopping(
-            monitor='val_loss', patience=10, restore_best_weights=True
+            monitor='val_loss', patience=15, restore_best_weights=True
         )
         lr_reducer = keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6, verbose=0
+            monitor='val_loss', factor=0.3, patience=10, min_lr=1e-6, verbose=0
         )
 
         self.model.fit(

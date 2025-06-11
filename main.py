@@ -32,7 +32,14 @@ class StockPredictionCLI:
         # Plot types and methods of ModelPlotter
         self.plot_methods = {
             'scatter': 'scatter',
-            'line': 'line_chart'
+            'line': 'line_chart',
+            'bar': 'compare_regression_metrics',
+            'class_heatmap': 'classification_heatmap',
+            'return_heatmap': 'return_heatmap',
+            'backtest_heatmap': 'backtest_heatmap',
+            'regime': 'regime_heatmap',
+            'confusion': 'plot_confusion_matrix',
+            'roc': 'roc_curves',
         }
 
         self.models = {}
@@ -202,8 +209,8 @@ class StockPredictionCLI:
                 print(f"Model '{model_name}' already trained. Retraining...")
             else:
                 print(f"Training '{model_name}'...")
-                print(f"  Preparing data for {model_name}")
-                model.prepare_data(self.data)
+            print(f"  Preparing data for {model_name}")
+            model.prepare_data(self.data)
 
             model.build_model()
             model.train()
@@ -261,7 +268,7 @@ class StockPredictionCLI:
             return
 
         model = self.models[model_name]['model']
-        results = self.evaluator.confidence_backtest(model, self.plotter)
+        results = self.evaluator.confidence_backtest(model, 'TSLA', self.plotter, True)
 
         if results:
             print(f"\nConfidence-based backtest completed for {model_class_name}")
@@ -271,6 +278,144 @@ class StockPredictionCLI:
         if plot_type not in self.plot_methods:
             print(f"Error: Unknown plot type '{plot_type}'")
             print(f"Available plot types: {', '.join(self.plot_methods.keys())}")
+            return
+
+        if plot_type in ['class_heatmap', 'roc']:
+            # Get all available models trained on direction_1d
+            available_models = []
+            for model_name, model_info in self.models.items():
+                if model_name.endswith('_direction_1d') and model_info['trained']:
+                    available_models.append(model_info['model'])
+
+            if len(available_models) < 2:
+                print("Error: Need at least 2 trained models for classification comparison")
+                return
+
+            print(f"\nGenerating {plot_type} plot for {len(available_models)} models...")
+            plotter_method = getattr(self.plotter, self.plot_methods[plot_type])
+            result = plotter_method(available_models)
+            print(f"Saved plot to: {result}")
+            return
+
+        if plot_type == 'return_heatmap':
+            # Get available return models grouped by target type
+            return_1d_models = []
+            return_5d_models = []
+
+            for model_name, model_info in self.models.items():
+                if model_name.endswith('_return_1d') and model_info['trained']:
+                    return_1d_models.append(model_info['model'])
+                elif model_name.endswith('_return_5d') and model_info['trained']:
+                    return_5d_models.append(model_info['model'])
+
+            if return_1d_models:
+                print(f"\nGenerating return_1d metrics heatmap for {len(return_1d_models)} models...")
+                result_1d = self.plotter.return_heatmap(return_1d_models)
+                print(f"Saved 1d heatmap to: {result_1d}")
+
+            if return_5d_models:
+                print(f"\nGenerating return_5d metrics heatmap for {len(return_5d_models)} models...")
+                result_5d = self.plotter.return_heatmap(return_5d_models)
+                print(f"Saved 5d heatmap to: {result_5d}")
+
+            return
+
+        if plot_type == 'backtest_heatmap':
+            if not model_class_name:
+                print("Error: backtest_heatmap requires model class name (e.g., 'plot backtest_heatmap xgboost')")
+                return
+
+            model_name = f'{model_class_name}_direction_1d'
+            if model_name not in self.models or not self.models[model_name]['trained']:
+                print(f"Error: Model '{model_class_name}' not trained for direction_1d")
+                return
+
+            print(f"\nGenerating backtest heatmap for {model_class_name}...")
+            model = self.models[model_name]['model']
+            result = self.plotter.backtest_heatmap(model)
+            print(f"Saved plot to: {result}")
+            return
+
+        if plot_type == 'scatter':
+            # Get available return models grouped by target type
+            return_1d_models = []
+            return_5d_models = []
+
+            for model_name, model_info in self.models.items():
+                if model_name.endswith('_return_1d') and model_info['trained']:
+                    return_1d_models.append(model_info['model'])
+                elif model_name.endswith('_return_5d') and model_info['trained']:
+                    return_5d_models.append(model_info['model'])
+
+            results = []
+            if return_1d_models:
+                print(f"\nGenerating 1-day return scatter plots for {len(return_1d_models)} models...")
+                result_1d = self.plotter.scatter(return_1d_models)
+                results.append(result_1d)
+                print(f"Saved 1d scatter to: {result_1d}")
+
+            if return_5d_models:
+                print(f"\nGenerating 5-day return scatter plots for {len(return_5d_models)} models...")
+                result_5d = self.plotter.scatter(return_5d_models)
+                results.append(result_5d)
+                print(f"Saved 5d scatter to: {result_5d}")
+
+            if not results:
+                print("No return models available for scatter plots")
+
+            return
+
+        if plot_type == 'bar':
+            # Get all available models trained on return_1d and return_5d
+            available_models = []
+            model_classes_found = set()
+
+            for model_name, model_info in self.models.items():
+                if (model_name.endswith('_return_1d') or model_name.endswith('_return_5d')) and model_info['trained']:
+                    available_models.append(model_info['model'])
+                    model_classes_found.add(model_info['class'])
+
+            if len(available_models) < 2:
+                print("Error: Need at least 2 trained models for RMSE comparison")
+                return
+
+            print(f"\nGenerating RMSE comparison for {len(available_models)} models ({len(model_classes_found)} model classes)...")
+            results = self.plotter.compare_regression_metrics(available_models)
+            print(f"\nSaved {len(results)} plots:")
+            for result in results:
+                print(f"  {result}")
+            return
+
+        if plot_type == 'confusion':
+            model_name = f'{model_class_name}_direction_1d'
+            if model_name not in self.models or not self.models[model_name]['trained']:
+                print(f"Error: Model '{model_class_name}' not trained for direction_1d")
+                return
+
+            print(f"\nGenerating confusion matrix for {model_class_name}...")
+            model = self.models[model_name]['model']
+            result = self.plotter.plot_confusion_matrix(model)
+            print(f"Saved plot to: {result}")
+            return
+
+        if plot_type == 'regime':
+            if not model_class_name:
+                print("Error: regime plot requires model class name (e.g., 'plot regime xgboost')")
+                return
+
+            model_1d_name = f'{model_class_name}_return_1d'
+            model_5d_name = f'{model_class_name}_return_5d'
+
+            if (model_1d_name not in self.models or not self.models[model_1d_name]['trained'] or
+                model_5d_name not in self.models or not self.models[model_5d_name]['trained']):
+                print(f"Error: Both {model_class_name} models (return_1d and return_5d) must be trained")
+                return
+
+            print(f"\nGenerating regime heatmap for {model_class_name}...")
+            model_1d = self.models[model_1d_name]['model']
+            model_5d = self.models[model_5d_name]['model']
+            result = self.plotter.regime_heatmap(model_1d, model_5d)
+            print(f"Saved plot to: {result}")
             return
 
         # If no model specified, plot for all available models

@@ -242,13 +242,13 @@ class BaseModel(ABC):
         """Compile the model"""
         if target_type == 'regression':
             keras_model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
+                optimizer=tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=0.5),
                 loss='mse',
                 metrics=['mae']
             )
         else:  # classification
             keras_model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
+                optimizer=tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=0.5),
                 loss='binary_crossentropy',
                 metrics=['accuracy']
             )
